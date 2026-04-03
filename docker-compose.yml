@@ -1,0 +1,25 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - data:/app/data
+    env_file:
+      - .env
+    environment:
+      - REALESTATE_DB_PATH=/app/data/properties.db
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    command: http app:8000
+    ports:
+      - "4040:4040"
+    env_file:
+      - .env
+    profiles:
+      - tunnel
+
+volumes:
+  data:

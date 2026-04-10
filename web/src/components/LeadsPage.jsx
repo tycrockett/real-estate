@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { fetchLeads, updateLead } from '../api'
+import { fetchLeads, updateLead, getShortCode } from '../api'
 
 const LEAD_STATUSES = [
   'new', 'contacted', 'callback', 'interested',
@@ -46,6 +46,17 @@ export default function LeadsPage() {
   const [loading, setLoading] = useState(true)
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
+  const [linkCopied, setLinkCopied] = useState(false)
+
+  const handleCopyLink = async () => {
+    const result = await getShortCode(selected.property_id)
+    if (result.code) {
+      const url = `${window.location.origin}/?p=${result.code}`
+      await navigator.clipboard.writeText(url)
+      setLinkCopied(true)
+      setTimeout(() => setLinkCopied(false), 2000)
+    }
+  }
 
   useEffect(() => {
     setLoading(true)
@@ -66,6 +77,7 @@ export default function LeadsPage() {
   const handleSelect = (lead) => {
     setSelectedId(lead.id)
     setNotes(lead.notes || '')
+    setLinkCopied(false)
   }
 
   const handleStatusChange = async (newStatus) => {
@@ -151,16 +163,21 @@ export default function LeadsPage() {
                 <h2 className="leads-detail-addr">{prop.address}</h2>
                 <span className="leads-detail-city">{prop.city}, {prop.state} {prop.zip_code}</span>
               </div>
-              <select
-                className="lead-status-select lead-status-lg"
-                value={selected.status}
-                onChange={e => handleStatusChange(e.target.value)}
-                style={{ color: STATUS_COLORS[selected.status] }}
-              >
-                {LEAD_STATUSES.map(s => (
-                  <option key={s} value={s}>{statusLabel(s)}</option>
-                ))}
-              </select>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <button className="btn-lookup" onClick={handleCopyLink}>
+                  {linkCopied ? 'Copied!' : 'Copy Link'}
+                </button>
+                <select
+                  className="lead-status-select lead-status-lg"
+                  value={selected.status}
+                  onChange={e => handleStatusChange(e.target.value)}
+                  style={{ color: STATUS_COLORS[selected.status] }}
+                >
+                  {LEAD_STATUSES.map(s => (
+                    <option key={s} value={s}>{statusLabel(s)}</option>
+                  ))}
+                </select>
+              </div>
             </div>
 
             {/* Contact */}

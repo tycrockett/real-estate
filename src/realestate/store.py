@@ -107,6 +107,16 @@ CREATE TABLE IF NOT EXISTS valuations (
 );
 """
 
+CREATE_SHORT_CODES_TABLE = """
+CREATE TABLE IF NOT EXISTS short_codes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    property_id INTEGER NOT NULL REFERENCES properties(id),
+    created_at TEXT NOT NULL,
+    click_count INTEGER DEFAULT 0
+);
+"""
+
 CREATE_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_source ON properties(source);",
     "CREATE INDEX IF NOT EXISTS idx_first_seen ON properties(first_seen);",
@@ -143,6 +153,7 @@ class PropertyStore:
             self._conn.execute(CREATE_LEADS_TABLE)
             self._conn.execute(CREATE_MESSAGES_TABLE)
             self._conn.execute(CREATE_VALUATIONS_TABLE)
+            self._conn.execute(CREATE_SHORT_CODES_TABLE)
             for idx in CREATE_INDEXES:
                 self._conn.execute(idx)
 

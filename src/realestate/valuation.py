@@ -127,11 +127,26 @@ UGRC_OUT_FIELDS = (
 )
 
 
+_DIRECTION_ABBREVS = {
+    "NORTH": "N", "SOUTH": "S", "EAST": "E", "WEST": "W",
+    "NORTHEAST": "NE", "NORTHWEST": "NW", "SOUTHEAST": "SE", "SOUTHWEST": "SW",
+}
+
+_SUFFIX_ABBREVS = {
+    "STREET": "ST", "AVENUE": "AVE", "DRIVE": "DR", "ROAD": "RD",
+    "BOULEVARD": "BLVD", "LANE": "LN", "COURT": "CT", "CIRCLE": "CIR",
+    "PLACE": "PL", "WAY": "WAY", "TRAIL": "TRL", "PARKWAY": "PKWY",
+}
+
+
 def _normalize_address_for_search(address: str) -> str:
     """Normalize address for UGRC LIKE query."""
     addr = address.upper().strip()
-    # Remove unit/apt suffixes for broader matching
     addr = re.sub(r'\s+(UNIT|APT|STE|#)\s*\S*$', '', addr)
+    for full, abbr in _DIRECTION_ABBREVS.items():
+        addr = re.sub(rf'\b{full}\b', abbr, addr)
+    for full, abbr in _SUFFIX_ABBREVS.items():
+        addr = re.sub(rf'\b{full}\b', abbr, addr)
     return addr
 
 
@@ -151,11 +166,31 @@ def lookup_ugrc_value(
     url = f"{UGRC_BASE}/Parcels_{service_name}_LIR/FeatureServer/0/query"
     search_addr = _normalize_address_for_search(address)
 
-    # Try exact match first, then LIKE
-    for where_clause in [
+    # Utah grid addresses often omit the street suffix (e.g. "126 E 100 S" not "126 E 100 S ST")
+    search_addr_no_suffix = re.sub(
+        r'\s+(ST|AVE|DR|RD|BLVD|LN|CT|CIR|PL|WAY|TRL|PKWY)$', '', search_addr
+    )
+
+    # Fuzzy: strip directions + suffixes to get "804%BOURDEAUX%" for "804 BOURDEAUX DR"
+    parts = search_addr.split()
+    street_num = parts[0] if parts else ""
+    core_words = [w for w in parts[1:] if w not in (
+        "N", "S", "E", "W", "NE", "NW", "SE", "SW",
+        "ST", "AVE", "DR", "RD", "BLVD", "LN", "CT", "CIR", "PL", "WAY", "TRL", "PKWY",
+    )]
+    core_name = " ".join(core_words)
+
+    searches = [
         f"PARCEL_ADD = '{search_addr}'",
         f"PARCEL_ADD LIKE '{search_addr}%'",
-    ]:
+    ]
+    if search_addr_no_suffix != search_addr:
+        searches.append(f"PARCEL_ADD = '{search_addr_no_suffix}'")
+        searches.append(f"PARCEL_ADD LIKE '{search_addr_no_suffix}%'")
+    if street_num and core_name:
+        searches.append(f"PARCEL_ADD LIKE '{street_num}%{core_name}%'")
+
+    for where_clause in searches:
         try:
             resp = requests.get(
                 url,

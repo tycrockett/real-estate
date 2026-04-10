@@ -15,7 +15,11 @@ function AuthGateInner({ children }) {
     if (isAuthenticated) {
       setTokenGetter(async () => {
         try {
-          const token = await getAccessTokenSilently()
+          const token = await getAccessTokenSilently({
+            authorizationParams: {
+              audience: import.meta.env.VITE_AUTH0_AUDIENCE || undefined,
+            },
+          })
           console.log('[AUTH GATE] Got token:', token?.slice(0, 20) + '...')
           return token
         } catch (e) {

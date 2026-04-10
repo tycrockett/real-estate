@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -17,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from realestate.analyzers import score_properties
 from realestate.auth import get_current_user
 from realestate.models import Property
-from realestate.valuation import estimate_remaining_balance, lookup_ugrc_value
+from realestate.valuation import estimate_remaining_balance, lookup_ugrc_value, _normalize_address_for_search, _get_rate
 from realestate.store import DEFAULT_DB_PATH
 
 DISTRESS_SCORERS = [
@@ -38,16 +39,22 @@ app.add_middleware(
 )
 
 
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+
 def _get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     conn.row_factory = sqlite3.Row
     # Ensure all tables exist
-    from realestate.store import CREATE_TABLE, CREATE_CONTACTS_TABLE, CREATE_LEADS_TABLE, CREATE_MESSAGES_TABLE, CREATE_VALUATIONS_TABLE
+    from realestate.store import CREATE_TABLE, CREATE_CONTACTS_TABLE, CREATE_LEADS_TABLE, CREATE_MESSAGES_TABLE, CREATE_VALUATIONS_TABLE, CREATE_SHORT_CODES_TABLE
     conn.execute(CREATE_TABLE)
     conn.execute(CREATE_CONTACTS_TABLE)
     conn.execute(CREATE_LEADS_TABLE)
     conn.execute(CREATE_MESSAGES_TABLE)
     conn.execute(CREATE_VALUATIONS_TABLE)
+    conn.execute(CREATE_SHORT_CODES_TABLE)
     return conn
 
 
@@ -379,6 +386,250 @@ def estimate_equity(property_id: int, user: dict = Depends(get_current_user)):
     return {
         "success": True,
         "valuation": {k: v for k, v in val_data.items() if k != "raw_data"},
+    }
+
+
+@app.post("/api/properties/{property_id}/short-code")
+def create_short_code(property_id: int, user: dict = Depends(get_current_user)):
+    conn = _get_conn()
+    row = conn.execute("SELECT id FROM properties WHERE id = ?", (property_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Property not found"}
+
+    existing = conn.execute(
+        "SELECT code FROM short_codes WHERE property_id = ?", (property_id,)
+    ).fetchone()
+    if existing:
+        conn.close()
+        return {"code": existing["code"]}
+
+    code = secrets.token_urlsafe(6)
+    now = datetime.now(UTC).isoformat()
+    with conn:
+        conn.execute(
+            "INSERT INTO short_codes (code, property_id, created_at) VALUES (?, ?, ?)",
+            (code, property_id, now),
+        )
+    conn.close()
+    return {"code": code}
+
+
+@app.get("/api/intake/link/{code}")
+def resolve_short_code(code: str):
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT sc.property_id, p.data, p.address, p.city, p.state, p.zip_code FROM short_codes sc "
+        "JOIN properties p ON p.id = sc.property_id WHERE sc.code = ?",
+        (code,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Not found"}
+
+    with conn:
+        conn.execute(
+            "UPDATE short_codes SET click_count = click_count + 1 WHERE code = ?",
+            (code,),
+        )
+
+    data = json.loads(row["data"])
+    raw = data.get("raw", {})
+
+    orig_date_str = None
+    orig_date_raw = raw.get("orig_rec_date", "")
+    if orig_date_raw:
+        try:
+            m, d, y = orig_date_raw.split("/")
+            orig_date_str = f"{y}-{m.zfill(2)}"
+        except (ValueError, IndexError):
+            pass
+
+    street = data.get("address", row["address"])
+    city = data.get("city", row["city"])
+    state = data.get("state", row["state"])
+    zip_code = data.get("zip_code", row["zip_code"])
+    formatted = f"{street}, {city}, {state} {zip_code}"
+
+    conn.close()
+    return {
+        "address": formatted,
+        "street": street,
+        "city": city,
+        "county": raw.get("county", ""),
+        "origination_date": orig_date_str,
+        "original_loan_amount": raw.get("orig_mtg_amt"),
+    }
+
+
+@app.post("/api/intake/valuation")
+def intake_valuation(body: dict):
+    """Public endpoint for the intake flow.
+
+    Checks the local DB first for known properties (NOD records with mortgage data),
+    then falls back to UGRC for assessed value.
+    """
+    address = body.get("address", "")
+    county = body.get("county", "")
+    city = body.get("city", "")
+    user_orig_date = body.get("origination_date")
+    last_month_paid = body.get("last_month_paid")
+    user_loan_amount = body.get("original_loan_amount")
+    user_home_value = body.get("estimated_home_value")
+    user_loan_balance = body.get("loan_balance")
+
+    estimated_market = None
+    bldg_sqft = None
+    built_yr = None
+    source = None
+    orig_mtg = None
+    orig_date_str = None
+    db_match = False
+
+    # Primary: check local DB for NOD records
+    conn = _get_conn()
+    normalized = _normalize_address_for_search(address)
+
+    # Extract street number + street name for fuzzy matching
+    # "804 BOURDEAUX DR" -> number "804", name "BOURDEAUX"
+    addr_parts = normalized.split()
+    street_num = addr_parts[0] if addr_parts else ""
+    # Strip direction prefixes and suffixes to get the core street name
+    core_words = [w for w in addr_parts[1:] if w not in (
+        "N", "S", "E", "W", "NE", "NW", "SE", "SW",
+        "ST", "AVE", "DR", "RD", "BLVD", "LN", "CT", "CIR", "PL", "WAY", "TRL", "PKWY",
+    )]
+    core_name = " ".join(core_words)
+
+    row = conn.execute(
+        "SELECT data FROM properties WHERE UPPER(address) = ? AND status = 'active'",
+        (normalized,),
+    ).fetchone()
+    if not row:
+        row = conn.execute(
+            "SELECT data FROM properties WHERE UPPER(address) LIKE ? AND status = 'active'",
+            (f"{normalized}%",),
+        ).fetchone()
+    if not row and street_num and core_name:
+        row = conn.execute(
+            "SELECT data FROM properties WHERE UPPER(address) LIKE ? AND status = 'active'",
+            (f"{street_num}%{core_name}%",),
+        ).fetchone()
+    conn.close()
+
+    if row:
+        data = json.loads(row["data"])
+        raw = data.get("raw", {})
+        orig_mtg = raw.get("orig_mtg_amt")
+        orig_date_raw = raw.get("orig_rec_date", "")
+        if orig_date_raw:
+            try:
+                m, d, y = orig_date_raw.split("/")
+                orig_date_str = f"{y}-{m.zfill(2)}"
+            except (ValueError, IndexError):
+                pass
+        db_match = True
+
+    # Use user-provided values if DB didn't have them
+    if not orig_date_str and user_orig_date:
+        orig_date_str = user_orig_date
+    if not orig_mtg and user_loan_amount:
+        orig_mtg = float(user_loan_amount)
+
+    # Get property value from UGRC
+    if county:
+        ugrc = lookup_ugrc_value(address, county, city)
+        assessed_value = ugrc.get("total_mkt_value")
+        if assessed_value:
+            estimated_market = round(assessed_value * MARKET_ADJUSTMENT)
+            bldg_sqft = ugrc.get("bldg_sqft")
+            built_yr = ugrc.get("built_yr")
+            source = "ugrc"
+
+    if not estimated_market and user_home_value:
+        estimated_market = round(float(user_home_value))
+        source = "user"
+
+    # Amortize to get monthly payment; override balance with user-provided value if given
+    remaining = None
+    amort = {}
+    if orig_mtg and orig_date_str:
+        try:
+            parts = orig_date_str.split("-")
+            orig_date = date(int(parts[0]), int(parts[1]), 1)
+            amort = estimate_remaining_balance(float(orig_mtg), orig_date)
+            remaining = amort.get("remaining_balance")
+        except (ValueError, IndexError):
+            pass
+    if user_loan_balance:
+        remaining = round(float(user_loan_balance))
+
+    monthly_payment = amort.get("monthly_payment")
+    if not monthly_payment and remaining and orig_date_str:
+        try:
+            parts = orig_date_str.split("-")
+            orig_date = date(int(parts[0]), int(parts[1]), 1)
+            rate = _get_rate(orig_date.year)
+            monthly_rate = rate / 100 / 12
+            months_elapsed = (date.today().year - orig_date.year) * 12 + (date.today().month - orig_date.month)
+            months_remaining = max(1, 360 - months_elapsed)
+            if monthly_rate > 0:
+                monthly_payment = round(
+                    remaining * (monthly_rate * (1 + monthly_rate) ** months_remaining)
+                    / ((1 + monthly_rate) ** months_remaining - 1), 2
+                )
+            else:
+                monthly_payment = round(remaining / months_remaining, 2)
+        except (ValueError, IndexError):
+            pass
+    months_behind = None
+    estimated_arrears = None
+    late_fees = None
+    legal_fees = None
+    total_fees = None
+    equity_after_fees = None
+
+    if last_month_paid and monthly_payment:
+        try:
+            lmp_parts = last_month_paid.split("-")
+            lmp_date = date(int(lmp_parts[0]), int(lmp_parts[1]), 1)
+            today = date.today()
+            months_behind = (today.year - lmp_date.year) * 12 + (today.month - lmp_date.month)
+            months_behind = max(0, months_behind)
+
+            estimated_arrears = round(months_behind * monthly_payment, 2)
+            late_fees = round(estimated_arrears * 0.05, 2)
+            legal_fees = 3000
+            total_fees = round(estimated_arrears + late_fees + legal_fees, 2)
+        except (ValueError, IndexError):
+            pass
+
+    estimated_equity = None
+    equity_percent = None
+    if estimated_market and remaining is not None:
+        estimated_equity = round(estimated_market - remaining)
+        equity_percent = round((estimated_equity / estimated_market) * 100, 1) if estimated_market > 0 else None
+        if total_fees is not None:
+            equity_after_fees = round(estimated_equity - total_fees)
+
+    return {
+        "estimated_market_value": estimated_market,
+        "remaining_balance": remaining,
+        "estimated_equity": estimated_equity,
+        "equity_percent": equity_percent,
+        "monthly_payment": monthly_payment,
+        "rate_used": amort.get("rate_used"),
+        "bldg_sqft": bldg_sqft,
+        "built_yr": built_yr,
+        "origination_date": orig_date_str,
+        "months_behind": months_behind,
+        "estimated_arrears": estimated_arrears,
+        "late_fees": late_fees,
+        "legal_fees": legal_fees,
+        "total_fees": total_fees,
+        "equity_after_fees": equity_after_fees,
+        "source": source,
+        "db_match": db_match,
     }
 
 

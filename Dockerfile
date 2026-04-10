@@ -1,7 +1,7 @@
 FROM node:24-slim AS frontend
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
-RUN npm ci
+RUN npm install
 COPY web/ ./
 ARG VITE_AUTH0_DOMAIN
 ARG VITE_AUTH0_CLIENT_ID

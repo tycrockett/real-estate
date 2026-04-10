@@ -19,7 +19,8 @@ from realestate.analyzers import score_properties
 from realestate.auth import get_current_user
 from realestate.models import Property
 from realestate.valuation import estimate_remaining_balance, lookup_ugrc_value, _normalize_address_for_search, _get_rate
-from realestate.store import DEFAULT_DB_PATH
+from realestate.store import DEFAULT_DB_PATH, PropertyStore
+from realestate.sources import get_source
 
 DISTRESS_SCORERS = [
     ("distress_stage", 2.0),
@@ -42,6 +43,27 @@ app.add_middleware(
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.post("/api/refresh")
+def refresh_data(user: dict = Depends(get_current_user)):
+    src = get_source("meridian_nod")
+    properties = src.fetch()
+
+    store = PropertyStore()
+    result = store.upsert(properties)
+
+    current_ids = {p.source_id for p in properties}
+    removed = store.mark_removed("meridian_nod", current_ids)
+    store.close()
+
+    return {
+        "fetched": len(properties),
+        "new": result.new,
+        "updated": result.updated,
+        "unchanged": result.unchanged,
+        "removed": removed,
+    }
 
 
 def _get_conn() -> sqlite3.Connection:

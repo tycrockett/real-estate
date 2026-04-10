@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { fetchProperties, fetchStats } from './api'
+import { fetchProperties, fetchStats, refreshData } from './api'
 import StatsBar from './components/StatsBar'
 import PropertyTable from './components/PropertyTable'
 import LeadsPage from './components/LeadsPage'
@@ -43,6 +43,23 @@ function Dashboard() {
 
 function AppContent() {
   const [tab, setTab] = useState('dashboard')
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshResult, setRefreshResult] = useState(null)
+
+  const handleRefresh = async () => {
+    setRefreshing(true)
+    setRefreshResult(null)
+    try {
+      const result = await refreshData()
+      setRefreshResult(result)
+      setTimeout(() => setRefreshResult(null), 5000)
+    } catch {
+      setRefreshResult({ error: true })
+      setTimeout(() => setRefreshResult(null), 5000)
+    } finally {
+      setRefreshing(false)
+    }
+  }
 
   return (
     <>
@@ -57,6 +74,15 @@ function AppContent() {
           <button className={`tab ${tab === 'messages' ? 'active' : ''}`} onClick={() => setTab('messages')}>
             Messages
           </button>
+          <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
+            {refreshing ? 'Refreshing...' : 'Refresh Data'}
+          </button>
+          {refreshResult && !refreshResult.error && (
+            <span className="refresh-result">
+              +{refreshResult.new} new, {refreshResult.updated} updated, {refreshResult.removed} removed
+            </span>
+          )}
+          {refreshResult?.error && <span className="refresh-result error">Refresh failed</span>}
         </nav>
       </header>
 

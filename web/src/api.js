@@ -86,7 +86,19 @@ export async function getMessages(leadId) {
   return res.json();
 }
 
+export async function getShortCode(propertyId) {
+  const res = await authFetch(`${BASE}/properties/${propertyId}/short-code`, {
+    method: 'POST',
+  });
+  return res.json();
+}
+
 export async function getMessagingStatus() {
   const res = await authFetch(`${BASE}/messaging/status`);
+  return res.json();
+}
+
+export async function refreshData() {
+  const res = await authFetch(`${BASE}/refresh`, { method: 'POST' });
   return res.json();
 }

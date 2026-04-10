@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import sqlite3
 from datetime import UTC, date, datetime
@@ -879,7 +880,7 @@ async def twilio_inbound(request: Request):
 
 
 # Serve React frontend in production
-DIST_DIR = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
+DIST_DIR = Path(os.environ.get("WEB_DIST_DIR", Path(__file__).resolve().parent.parent.parent / "web" / "dist"))
 
 if DIST_DIR.exists():
     from fastapi.responses import FileResponse

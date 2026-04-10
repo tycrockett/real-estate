@@ -51,7 +51,7 @@ export default function LeadsPage() {
   const handleCopyLink = async () => {
     const result = await getShortCode(selected.property_id)
     if (result.code) {
-      const url = `${window.location.origin}/?p=${result.code}`
+      const url = `https://real-estate-intake.vercel.app/?p=${result.code}`
       await navigator.clipboard.writeText(url)
       setLinkCopied(true)
       setTimeout(() => setLinkCopied(false), 2000)

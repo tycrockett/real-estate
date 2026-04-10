@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useAuth0 } from '@auth0/auth0-react'
 import { setTokenGetter } from '../api'
 
@@ -9,28 +9,31 @@ export default function AuthGate({ enabled, children }) {
 
 function AuthGateInner({ children }) {
   const { isAuthenticated, isLoading, loginWithRedirect, logout, user, getAccessTokenSilently } = useAuth0()
+  const tokenGetterSet = useRef(false)
+
+  if (isAuthenticated && !tokenGetterSet.current) {
+    tokenGetterSet.current = true
+    setTokenGetter(async () => {
+      try {
+        const token = await getAccessTokenSilently({
+          authorizationParams: {
+            audience: import.meta.env.VITE_AUTH0_AUDIENCE || undefined,
+          },
+        })
+        return token
+      } catch (e) {
+        console.error('[AUTH GATE] getAccessTokenSilently failed:', e)
+        return null
+      }
+    })
+  }
 
   useEffect(() => {
-    console.log('[AUTH GATE] isAuthenticated:', isAuthenticated)
-    if (isAuthenticated) {
-      setTokenGetter(async () => {
-        try {
-          const token = await getAccessTokenSilently({
-            authorizationParams: {
-              audience: import.meta.env.VITE_AUTH0_AUDIENCE || undefined,
-            },
-          })
-          console.log('[AUTH GATE] Got token:', token?.slice(0, 20) + '...')
-          return token
-        } catch (e) {
-          console.error('[AUTH GATE] getAccessTokenSilently failed:', e)
-          return null
-        }
-      })
-    } else {
+    if (!isAuthenticated) {
+      tokenGetterSet.current = false
       setTokenGetter(null)
     }
-  }, [isAuthenticated, getAccessTokenSilently])
+  }, [isAuthenticated])
 
   if (isLoading) {
     return (

@@ -696,6 +696,7 @@ def intake_submit(body: dict):
     email = body.get("email", "")
     intent = body.get("intent", "")
     selected_structure = body.get("selected_structure", "")
+    recommended_structure = body.get("recommended_structure") or ""
     facts = body.get("property_facts", {})
 
     address = facts.get("address", "") or facts.get("street", "")
@@ -757,6 +758,7 @@ def intake_submit(body: dict):
                 "county": county,
                 "intent": intent,
                 "selected_structure": selected_structure,
+                "recommended_structure": recommended_structure,
             },
         }
         with conn:
@@ -787,6 +789,7 @@ def intake_submit(body: dict):
     custom = json.dumps({
         "intent": intent,
         "selected_structure": selected_structure,
+        "recommended_structure": recommended_structure,
         "property_facts": facts,
     })
     now = datetime.now(UTC).isoformat()
@@ -812,7 +815,10 @@ def intake_submit(body: dict):
     # Create notification
     est_value = facts.get("estimatedValue")
     loan_balance = facts.get("loanBalance")
-    notif_body = f"{address} — {email} — {selected_structure}"
+    structure_label = selected_structure
+    if recommended_structure and recommended_structure != selected_structure:
+        structure_label = f"{selected_structure} (recommended: {recommended_structure})"
+    notif_body = f"{address} — {email} — {structure_label}"
     if est_value:
         notif_body += f" | Value: ${est_value:,.0f}"
     if loan_balance:
@@ -832,7 +838,7 @@ def intake_submit(body: dict):
     quo_from = os.environ.get("QUO_PHONE_NUMBER", "")
     if notify_phone and quo_api_key and quo_from:
         import requests as _req
-        sms_body = f"New intake lead!\n📍 {address}\n📧 {email}\n🏠 {selected_structure}"
+        sms_body = f"New intake lead!\n📍 {address}\n📧 {email}\n🏠 {structure_label}"
         if est_value:
             sms_body += f"\n💰 Value: ${est_value:,.0f}"
         if loan_balance:

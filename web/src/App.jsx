@@ -4,6 +4,7 @@ import StatsBar from './components/StatsBar'
 import PropertyTable from './components/PropertyTable'
 import LeadsPage from './components/LeadsPage'
 import MessagesPage from './components/MessagesPage'
+import SettingsPage from './components/SettingsPage'
 import AuthGate from './components/AuthGate'
 
 function Dashboard() {
@@ -74,6 +75,9 @@ function AppContent() {
           <button className={`tab ${tab === 'messages' ? 'active' : ''}`} onClick={() => setTab('messages')}>
             Messages
           </button>
+          <button className={`tab ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
+            Settings
+          </button>
           <button className="refresh-btn" onClick={handleRefresh} disabled={refreshing}>
             {refreshing ? 'Refreshing...' : 'Refresh Data'}
           </button>
@@ -89,6 +93,7 @@ function AppContent() {
       {tab === 'dashboard' && <Dashboard />}
       {tab === 'leads' && <LeadsPage />}
       {tab === 'messages' && <MessagesPage />}
+      {tab === 'settings' && <SettingsPage />}
     </>
   )
 }

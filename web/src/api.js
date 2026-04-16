@@ -98,6 +98,75 @@ export async function getMessagingStatus() {
   return res.json();
 }
 
+export async function fetchSmsTemplates() {
+  const res = await authFetch(`${BASE}/sms-templates`);
+  return res.json();
+}
+
+export async function createSmsTemplate(label, body) {
+  const res = await authFetch(`${BASE}/sms-templates`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label, body }),
+  });
+  return res.json();
+}
+
+export async function updateSmsTemplate(id, updates) {
+  const res = await authFetch(`${BASE}/sms-templates/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  return res.json();
+}
+
+export async function deleteSmsTemplate(id) {
+  const res = await authFetch(`${BASE}/sms-templates/${id}`, {
+    method: 'DELETE',
+  });
+  return res.json();
+}
+
+export async function fetchQuoMessages(phone) {
+  const res = await authFetch(`${BASE}/quo/messages?phone=${encodeURIComponent(phone)}`);
+  return res.json();
+}
+
+export async function sendQuoMessage(leadId, to, content) {
+  const res = await authFetch(`${BASE}/quo/send`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lead_id: leadId, to, content }),
+  });
+  return res.json();
+}
+
+export async function addLeadPhone(leadId, phone, type = '') {
+  const res = await authFetch(`${BASE}/leads/${leadId}/phones`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone, type }),
+  });
+  return res.json();
+}
+
+export async function updateLeadPhone(leadId, phoneId, updates) {
+  const res = await authFetch(`${BASE}/leads/${leadId}/phones/${phoneId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  return res.json();
+}
+
+export async function removeLeadPhone(leadId, phoneId) {
+  const res = await authFetch(`${BASE}/leads/${leadId}/phones/${phoneId}`, {
+    method: 'DELETE',
+  });
+  return res.json();
+}
+
 export async function refreshData() {
   const res = await authFetch(`${BASE}/refresh`, { method: 'POST' });
   return res.json();

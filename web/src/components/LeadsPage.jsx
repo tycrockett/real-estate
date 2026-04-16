@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { fetchLeads, updateLead, getShortCode } from '../api'
+import { fetchLeads, updateLead, getShortCode, addLeadPhone, updateLeadPhone, removeLeadPhone, sendQuoMessage, fetchSmsTemplates } from '../api'
 
 const LEAD_STATUSES = [
   'new', 'contacted', 'callback', 'interested',
@@ -47,6 +47,14 @@ export default function LeadsPage() {
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)
   const [linkCopied, setLinkCopied] = useState(false)
+  const [smsModal, setSmsModal] = useState(null) // { phone } or null
+  const [smsDraft, setSmsDraft] = useState('')
+  const [smsTemplate, setSmsTemplate] = useState(0)
+  const [smsSending, setSmsSending] = useState(false)
+  const [smsResult, setSmsResult] = useState(null)
+  const [smsTemplates, setSmsTemplates] = useState([])
+
+  useEffect(() => { fetchSmsTemplates().then(setSmsTemplates) }, [])
 
   const handleCopyLink = async () => {
     const result = await getShortCode(selected.property_id)
@@ -100,6 +108,77 @@ export default function LeadsPage() {
     const result = await updateLead(selected.id, { [field]: value })
     if (result.lead) {
       setLeads(prev => prev.map(l => l.id === selected.id ? { ...l, ...result.lead } : l))
+    }
+  }
+
+  const handleAddPhone = async () => {
+    const result = await addLeadPhone(selected.id, '', '')
+    if (result.phone) {
+      setLeads(prev => prev.map(l =>
+        l.id === selected.id
+          ? { ...l, phones: [...(l.phones || []), result.phone] }
+          : l
+      ))
+    }
+  }
+
+  const handleUpdatePhone = async (phoneId, value) => {
+    const formatted = formatE164(value)
+    const result = await updateLeadPhone(selected.id, phoneId, { phone: formatted })
+    if (result.phone) {
+      setLeads(prev => prev.map(l =>
+        l.id === selected.id
+          ? { ...l, phones: (l.phones || []).map(p => p.id === phoneId ? result.phone : p) }
+          : l
+      ))
+    }
+  }
+
+  const handleRemovePhone = async (phoneId) => {
+    const result = await removeLeadPhone(selected.id, phoneId)
+    if (result.success) {
+      setLeads(prev => prev.map(l =>
+        l.id === selected.id
+          ? { ...l, phones: (l.phones || []).filter(p => p.id !== phoneId) }
+          : l
+      ))
+    }
+  }
+
+  const fillTemplate = (tpl) => {
+    const ownerRaw = (raw.owner_name || '').split(/\s*&\s*/)[0].trim()
+    const firstName = ownerRaw
+      ? ownerRaw.split(/\s+/)[0].toLowerCase().replace(/^./, c => c.toUpperCase())
+      : 'there'
+    const address = prop.address || 'your property'
+    return (tpl.body || '').replace(/\{name\}/g, firstName).replace(/\{address\}/g, address)
+  }
+
+  const openSmsModal = (phone) => {
+    const tpl = smsTemplates[0]
+    setSmsModal({ phone })
+    setSmsTemplate(0)
+    setSmsDraft(tpl ? fillTemplate(tpl) : '')
+    setSmsResult(null)
+  }
+
+  const handleSmsTemplateChange = (idx) => {
+    setSmsTemplate(idx)
+    const tpl = smsTemplates[idx]
+    setSmsDraft(tpl ? fillTemplate(tpl) : '')
+  }
+
+  const handleSmsSend = async () => {
+    if (!smsDraft.trim() || !smsModal) return
+    setSmsSending(true)
+    setSmsResult(null)
+    const result = await sendQuoMessage(selected.id, smsModal.phone, smsDraft)
+    setSmsSending(false)
+    if (result.success) {
+      setSmsResult('sent')
+      setTimeout(() => setSmsModal(null), 1200)
+    } else {
+      setSmsResult(result.error || 'Send failed')
     }
   }
 
@@ -202,24 +281,6 @@ export default function LeadsPage() {
                   <span className="leads-field-value">{raw.owner_name || '—'}</span>
                 </div>
                 <div className="leads-detail-field">
-                  <span className="leads-field-label">Phone 1</span>
-                  <EditableField
-                    value={selected.phone_1}
-                    onSave={v => handleFieldUpdate('phone_1', v)}
-                    placeholder="No phone"
-                    formatPhone
-                  />
-                </div>
-                <div className="leads-detail-field">
-                  <span className="leads-field-label">Phone 2</span>
-                  <EditableField
-                    value={selected.phone_2}
-                    onSave={v => handleFieldUpdate('phone_2', v)}
-                    placeholder="No phone"
-                    formatPhone
-                  />
-                </div>
-                <div className="leads-detail-field">
                   <span className="leads-field-label">Email</span>
                   <EditableField
                     value={selected.email_1}
@@ -234,6 +295,36 @@ export default function LeadsPage() {
                     {raw.owner_mail_city_state_zip ? `, ${raw.owner_mail_city_state_zip}` : ''}
                   </span>
                 </div>
+              </div>
+              <div className="leads-phones-list">
+                <span className="leads-field-label">Phones</span>
+                {(selected.phones || []).map((p) => (
+                  <div className="leads-phone-row" key={p.id}>
+                    <EditableField
+                      value={p.phone}
+                      onSave={v => handleUpdatePhone(p.id, v)}
+                      placeholder="No phone"
+                      formatPhone
+                    />
+                    {p.phone && (
+                      <button
+                        className="btn-sms-phone"
+                        onClick={() => openSmsModal(p.phone)}
+                        title="Send SMS"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                        </svg>
+                      </button>
+                    )}
+                    <button
+                      className="btn-remove-phone"
+                      onClick={() => handleRemovePhone(p.id)}
+                      title="Remove phone"
+                    >&times;</button>
+                  </div>
+                ))}
+                <button className="btn-add-phone" onClick={handleAddPhone}>+ Add Phone</button>
               </div>
             </div>
 
@@ -375,6 +466,51 @@ export default function LeadsPage() {
             <div className="leads-detail-meta">
               Created {selected.created_at?.split('T')[0]} | Updated {selected.updated_at?.split('T')[0]}
             </div>
+
+            {/* SMS Modal */}
+            {smsModal && (
+              <div className="sms-modal-overlay" onClick={() => setSmsModal(null)}>
+                <div className="sms-modal" onClick={e => e.stopPropagation()}>
+                  <div className="sms-modal-header">
+                    <span>Send SMS to {smsModal.phone}</span>
+                    <button className="sms-modal-close" onClick={() => setSmsModal(null)}>&times;</button>
+                  </div>
+                  <div className="sms-modal-body">
+                    <select
+                      className="sms-template-select"
+                      value={smsTemplate}
+                      onChange={e => handleSmsTemplateChange(Number(e.target.value))}
+                    >
+                      {smsTemplates.map((t, i) => (
+                        <option key={t.id} value={i}>{t.label}</option>
+                      ))}
+                    </select>
+                    <textarea
+                      className="sms-draft"
+                      value={smsDraft}
+                      onChange={e => setSmsDraft(e.target.value)}
+                      rows={6}
+                      placeholder="Type your message..."
+                    />
+                    <div className="sms-modal-footer">
+                      {smsResult && smsResult !== 'sent' && (
+                        <span className="sms-error">{smsResult}</span>
+                      )}
+                      {smsResult === 'sent' && (
+                        <span className="sms-success">Sent!</span>
+                      )}
+                      <button
+                        className="btn-sms-send"
+                        onClick={handleSmsSend}
+                        disabled={smsSending || !smsDraft.trim()}
+                      >
+                        {smsSending ? 'Sending...' : 'Send'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </>
         ) : (
           <div className="leads-detail-empty">

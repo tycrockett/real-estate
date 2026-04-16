@@ -34,6 +34,7 @@ class Property(BaseModel):
     hoa: float | None = None
     tax_annual: float | None = None
     url: str | None = None
+    normalized_address: str | None = None
     raw: dict | None = None
 
     @computed_field

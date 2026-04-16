@@ -21,6 +21,7 @@ from realestate.auth import get_current_user
 from realestate.models import Property
 from realestate.valuation import estimate_remaining_balance, lookup_ugrc_value, _normalize_address_for_search, _get_rate
 from realestate.store import DEFAULT_DB_PATH, PropertyStore
+from realestate.geocoding import normalize_address
 from realestate.sources import get_source
 
 DISTRESS_SCORERS = [
@@ -51,6 +52,12 @@ def refresh_data(user: dict = Depends(get_current_user)):
     src = get_source("meridian_nod")
     properties = src.fetch()
 
+    for prop in properties:
+        if not prop.normalized_address:
+            prop.normalized_address = normalize_address(
+                prop.address, prop.city, prop.state, prop.zip_code,
+            )
+
     store = PropertyStore()
     result = store.upsert(properties)
 
@@ -67,17 +74,40 @@ def refresh_data(user: dict = Depends(get_current_user)):
     }
 
 
+@app.post("/api/backfill-normalized-addresses")
+def backfill_normalized_addresses(user: dict = Depends(get_current_user)):
+    store = PropertyStore()
+    rows = store.get_properties_missing_normalized_address()
+    updated = 0
+    failed = 0
+    for row in rows:
+        result = normalize_address(row["address"], row["city"], row["state"], row["zip_code"])
+        if result:
+            store.set_normalized_address(row["id"], result)
+            updated += 1
+        else:
+            failed += 1
+    store.close()
+    return {"total": len(rows), "updated": updated, "failed": failed}
+
+
 def _get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(str(DEFAULT_DB_PATH))
     conn.row_factory = sqlite3.Row
     # Ensure all tables exist
-    from realestate.store import CREATE_TABLE, CREATE_CONTACTS_TABLE, CREATE_LEADS_TABLE, CREATE_MESSAGES_TABLE, CREATE_VALUATIONS_TABLE, CREATE_SHORT_CODES_TABLE
+    from realestate.store import CREATE_TABLE, CREATE_CONTACTS_TABLE, CREATE_LEADS_TABLE, CREATE_LEAD_PHONES_TABLE, CREATE_SMS_TEMPLATES_TABLE, CREATE_MESSAGES_TABLE, CREATE_VALUATIONS_TABLE, CREATE_SHORT_CODES_TABLE
     conn.execute(CREATE_TABLE)
     conn.execute(CREATE_CONTACTS_TABLE)
     conn.execute(CREATE_LEADS_TABLE)
+    conn.execute(CREATE_LEAD_PHONES_TABLE)
+    conn.execute(CREATE_SMS_TEMPLATES_TABLE)
     conn.execute(CREATE_MESSAGES_TABLE)
     conn.execute(CREATE_VALUATIONS_TABLE)
     conn.execute(CREATE_SHORT_CODES_TABLE)
+    # Migrate: add normalized_address if missing
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(properties)").fetchall()]
+    if "normalized_address" not in cols:
+        conn.execute("ALTER TABLE properties ADD COLUMN normalized_address TEXT")
     return conn
 
 
@@ -88,6 +118,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     data["_last_seen"] = row["last_seen"]
     data["_updated_at"] = row["updated_at"]
     data["_status"] = row["status"]
+    data["normalized_address"] = row["normalized_address"]
     return data
 
 
@@ -105,6 +136,7 @@ def _score_results(rows: list, conn: sqlite3.Connection | None = None) -> list[d
             "_last_seen": row["last_seen"],
             "_updated_at": row["updated_at"],
             "_status": row["status"],
+            "normalized_address": row["normalized_address"],
         })
 
     # Load contacts, valuations, and leads
@@ -194,16 +226,18 @@ def _score_results(rows: list, conn: sqlite3.Connection | None = None) -> list[d
 
         lead = leads.get(pid)
         if lead:
+            lead_phones = []
+            if conn:
+                phone_rows = conn.execute(
+                    "SELECT * FROM lead_phones WHERE lead_id = ? ORDER BY position, id",
+                    (lead["id"],),
+                ).fetchall()
+                lead_phones = [{"id": r["id"], "phone": r["phone"], "type": r["type"]} for r in phone_rows]
             prop_dict["_lead"] = {
                 "id": lead["id"],
                 "status": lead["status"],
                 "notes": lead["notes"],
-                "phone_1": lead["phone_1"],
-                "phone_1_type": lead["phone_1_type"],
-                "phone_2": lead["phone_2"],
-                "phone_2_type": lead["phone_2_type"],
-                "phone_3": lead["phone_3"],
-                "phone_3_type": lead["phone_3_type"],
+                "phones": lead_phones,
                 "email_1": lead["email_1"],
                 "email_2": lead["email_2"],
                 "custom_data": lead["custom_data"],
@@ -656,6 +690,190 @@ def intake_valuation(body: dict):
     }
 
 
+@app.post("/api/intake/submit")
+def intake_submit(body: dict):
+    """Public endpoint: save an intake lead and send notification."""
+    email = body.get("email", "")
+    intent = body.get("intent", "")
+    selected_structure = body.get("selected_structure", "")
+    facts = body.get("property_facts", {})
+
+    address = facts.get("address", "") or facts.get("street", "")
+    city = facts.get("city", "")
+    county = facts.get("county", "")
+
+    if not email or not address:
+        return {"error": "email and address are required"}
+
+    conn = _get_conn()
+
+    # Try to match existing property by normalized address first
+    row = conn.execute(
+        "SELECT id FROM properties WHERE normalized_address = ? AND status = 'active'",
+        (address,),
+    ).fetchone()
+
+    # Fall back to fuzzy matching on raw address
+    if not row:
+        normalized = _normalize_address_for_search(address)
+        addr_parts = normalized.split()
+        street_num = addr_parts[0] if addr_parts else ""
+        core_words = [w for w in addr_parts[1:] if w not in (
+            "N", "S", "E", "W", "NE", "NW", "SE", "SW",
+            "ST", "AVE", "DR", "RD", "BLVD", "LN", "CT", "CIR", "PL", "WAY", "TRL", "PKWY",
+        )]
+        core_name = " ".join(core_words)
+
+        row = conn.execute(
+            "SELECT id FROM properties WHERE UPPER(address) = ? AND status = 'active'",
+            (normalized,),
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                "SELECT id FROM properties WHERE UPPER(address) LIKE ? AND status = 'active'",
+                (f"{normalized}%",),
+            ).fetchone()
+        if not row and street_num and core_name:
+            row = conn.execute(
+                "SELECT id FROM properties WHERE UPPER(address) LIKE ? AND status = 'active'",
+                (f"%{street_num}%{core_name}%",),
+            ).fetchone()
+
+    if row:
+        property_id = row["id"]
+    else:
+        # Create a new property record from intake data
+        now = datetime.now(UTC).isoformat()
+        prop_data = {
+            "source": "intake",
+            "source_id": f"intake-{secrets.token_urlsafe(8)}",
+            "address": address,
+            "normalized_address": address,
+            "city": city,
+            "state": "",
+            "zip_code": "",
+            "price": facts.get("estimatedValue") or 0,
+            "raw": {
+                "county": county,
+                "intent": intent,
+                "selected_structure": selected_structure,
+            },
+        }
+        with conn:
+            conn.execute(
+                """INSERT INTO properties (source, source_id, address, city, state, zip_code, price, normalized_address, data, first_seen, last_seen, updated_at, status)
+                   VALUES (?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, 'active')""",
+                (
+                    "intake",
+                    prop_data["source_id"],
+                    address,
+                    city,
+                    prop_data["price"],
+                    address,
+                    json.dumps(prop_data),
+                    now, now, now,
+                ),
+            )
+        property_id = conn.execute(
+            "SELECT id FROM properties WHERE source = ? AND source_id = ?",
+            ("intake", prop_data["source_id"]),
+        ).fetchone()["id"]
+
+    # Create or update lead
+    existing_lead = conn.execute(
+        "SELECT * FROM leads WHERE property_id = ?", (property_id,)
+    ).fetchone()
+
+    custom = json.dumps({
+        "intent": intent,
+        "selected_structure": selected_structure,
+        "property_facts": facts,
+    })
+    now = datetime.now(UTC).isoformat()
+
+    if existing_lead:
+        lead_id = existing_lead["id"]
+        with conn:
+            conn.execute(
+                "UPDATE leads SET email_1 = ?, custom_data = ?, updated_at = ? WHERE id = ?",
+                (email, custom, now, lead_id),
+            )
+    else:
+        with conn:
+            conn.execute(
+                """INSERT INTO leads (property_id, status, email_1, custom_data, created_at, updated_at)
+                   VALUES (?, 'new', ?, ?, ?, ?)""",
+                (property_id, email, custom, now, now),
+            )
+        lead_id = conn.execute(
+            "SELECT id FROM leads WHERE property_id = ?", (property_id,)
+        ).fetchone()["id"]
+
+    # Create notification
+    est_value = facts.get("estimatedValue")
+    loan_balance = facts.get("loanBalance")
+    notif_body = f"{address} — {email} — {selected_structure}"
+    if est_value:
+        notif_body += f" | Value: ${est_value:,.0f}"
+    if loan_balance:
+        notif_body += f" | Balance: ${loan_balance:,.0f}"
+
+    with conn:
+        conn.execute(
+            "INSERT INTO notifications (type, title, body, lead_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            ("intake_lead", "New intake lead", notif_body, lead_id, now),
+        )
+
+    conn.close()
+
+    # Send SMS via Quo
+    notify_phone = os.environ.get("INTAKE_NOTIFY_PHONE", "")
+    quo_api_key = os.environ.get("QUO_API_KEY", "")
+    quo_from = os.environ.get("QUO_PHONE_NUMBER", "")
+    if notify_phone and quo_api_key and quo_from:
+        import requests as _req
+        sms_body = f"New intake lead!\n📍 {address}\n📧 {email}\n🏠 {selected_structure}"
+        if est_value:
+            sms_body += f"\n💰 Value: ${est_value:,.0f}"
+        if loan_balance:
+            sms_body += f" | Balance: ${loan_balance:,.0f}"
+        try:
+            _req.post(
+                "https://api.openphone.com/v1/messages",
+                headers={"Authorization": quo_api_key, "Content-Type": "application/json"},
+                json={"content": sms_body, "from": quo_from, "to": [notify_phone]},
+                timeout=10,
+            )
+        except Exception as e:
+            print(f"[INTAKE] Quo SMS failed: {e}")
+
+    return {"id": lead_id}
+
+
+@app.get("/api/notifications")
+def list_notifications(unread_only: bool = False, user: dict = Depends(get_current_user)):
+    store = PropertyStore()
+    notifications = store.get_notifications(unread_only=unread_only)
+    store.close()
+    return notifications
+
+
+@app.put("/api/notifications/{notification_id}/read")
+def mark_notification_read(notification_id: int, user: dict = Depends(get_current_user)):
+    store = PropertyStore()
+    store.mark_notification_read(notification_id)
+    store.close()
+    return {"success": True}
+
+
+@app.get("/api/notifications/unread-count")
+def unread_notification_count(user: dict = Depends(get_current_user)):
+    store = PropertyStore()
+    count = store.get_unread_count()
+    store.close()
+    return {"count": count}
+
+
 LEAD_STATUSES = ["new", "contacted", "callback", "interested", "negotiating", "under_contract", "closed", "dead"]
 
 
@@ -695,8 +913,7 @@ def update_lead(lead_id: int, body: dict, user: dict = Depends(get_current_user)
         return {"error": "Lead not found"}
 
     allowed = {
-        "status", "notes", "phone_1", "phone_1_type", "phone_2", "phone_2_type",
-        "phone_3", "phone_3_type", "email_1", "email_2", "custom_data",
+        "status", "notes", "email_1", "email_2", "custom_data",
     }
     updates = {k: v for k, v in body.items() if k in allowed}
     if not updates:
@@ -713,6 +930,80 @@ def update_lead(lead_id: int, body: dict, user: dict = Depends(get_current_user)
     updated = conn.execute("SELECT * FROM leads WHERE id = ?", (lead_id,)).fetchone()
     conn.close()
     return {"lead": dict(updated)}
+
+
+@app.post("/api/leads/{lead_id}/phones")
+def add_lead_phone(lead_id: int, body: dict, user: dict = Depends(get_current_user)):
+    """Add a phone number to a lead."""
+    conn = _get_conn()
+    lead = conn.execute("SELECT id FROM leads WHERE id = ?", (lead_id,)).fetchone()
+    if not lead:
+        conn.close()
+        return {"error": "Lead not found"}
+
+    phone = body.get("phone", "")
+    phone_type = body.get("type", "")
+    max_pos = conn.execute(
+        "SELECT COALESCE(MAX(position), -1) as mp FROM lead_phones WHERE lead_id = ?",
+        (lead_id,),
+    ).fetchone()["mp"]
+
+    with conn:
+        conn.execute(
+            "INSERT INTO lead_phones (lead_id, phone, type, position) VALUES (?, ?, ?, ?)",
+            (lead_id, phone, phone_type, max_pos + 1),
+        )
+    row = conn.execute(
+        "SELECT * FROM lead_phones WHERE lead_id = ? ORDER BY id DESC LIMIT 1",
+        (lead_id,),
+    ).fetchone()
+    conn.close()
+    return {"phone": {"id": row["id"], "phone": row["phone"], "type": row["type"]}}
+
+
+@app.put("/api/leads/{lead_id}/phones/{phone_id}")
+def update_lead_phone(lead_id: int, phone_id: int, body: dict, user: dict = Depends(get_current_user)):
+    """Update a phone number on a lead."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM lead_phones WHERE id = ? AND lead_id = ?", (phone_id, lead_id)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Phone not found"}
+
+    updates = {}
+    if "phone" in body:
+        updates["phone"] = body["phone"]
+    if "type" in body:
+        updates["type"] = body["type"]
+
+    if updates:
+        sets = ", ".join(f"{k}=?" for k in updates)
+        vals = list(updates.values()) + [phone_id]
+        with conn:
+            conn.execute(f"UPDATE lead_phones SET {sets} WHERE id=?", vals)
+
+    updated = conn.execute("SELECT * FROM lead_phones WHERE id = ?", (phone_id,)).fetchone()
+    conn.close()
+    return {"phone": {"id": updated["id"], "phone": updated["phone"], "type": updated["type"]}}
+
+
+@app.delete("/api/leads/{lead_id}/phones/{phone_id}")
+def delete_lead_phone(lead_id: int, phone_id: int, user: dict = Depends(get_current_user)):
+    """Remove a phone number from a lead."""
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT * FROM lead_phones WHERE id = ? AND lead_id = ?", (phone_id, lead_id)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Phone not found"}
+
+    with conn:
+        conn.execute("DELETE FROM lead_phones WHERE id = ?", (phone_id,))
+    conn.close()
+    return {"success": True}
 
 
 @app.get("/api/leads")
@@ -735,12 +1026,28 @@ def list_leads(status: str | None = None, user: dict = Depends(get_current_user)
     query += " ORDER BY l.updated_at DESC"
 
     rows = conn.execute(query, params).fetchall()
+
+    # Collect lead IDs to batch-load phones
+    lead_ids = [r["id"] for r in rows]
+    phones_by_lead = {}
+    if lead_ids:
+        ph_placeholders = ",".join("?" for _ in lead_ids)
+        phone_rows = conn.execute(
+            f"SELECT * FROM lead_phones WHERE lead_id IN ({ph_placeholders}) ORDER BY position, id",
+            lead_ids,
+        ).fetchall()
+        for pr in phone_rows:
+            phones_by_lead.setdefault(pr["lead_id"], []).append(
+                {"id": pr["id"], "phone": pr["phone"], "type": pr["type"]}
+            )
+
     conn.close()
 
     results = []
     for r in rows:
         lead = {k: r[k] for k in r.keys() if k not in ("data",)}
         lead["property_data"] = json.loads(r["data"])
+        lead["phones"] = phones_by_lead.get(r["id"], [])
         if r["estimated_market_value"] is not None or r["remaining_balance"] is not None:
             lead["valuation"] = {
                 "assessed_value": r["assessed_value"],
@@ -839,6 +1146,177 @@ def messaging_status(user: dict = Depends(get_current_user)):
     }
 
 
+DEFAULT_SMS_TEMPLATES = [
+    {"label": "Initial Outreach", "body": "Hi {name}, my name is Ty. I came across your property at {address} and wanted to reach out. I help homeowners explore options when they're facing difficult situations with their mortgage. No pressure at all \u2014 just wanted to see if there's anything I can help with. Feel free to call or text me back anytime."},
+    {"label": "Follow Up", "body": "Hi {name}, I reached out a few days ago about your property at {address}. I know things can get busy \u2014 just wanted to check in and see if you had any questions or wanted to chat. I'm happy to help however I can."},
+    {"label": "Callback Reminder", "body": "Hi {name}, just a quick reminder about our chat regarding {address}. Looking forward to connecting \u2014 let me know what time works best for you."},
+]
+
+
+@app.get("/api/sms-templates")
+def list_sms_templates(user: dict = Depends(get_current_user)):
+    conn = _get_conn()
+    rows = conn.execute("SELECT * FROM sms_templates ORDER BY position, id").fetchall()
+    if not rows:
+        # Seed defaults on first access
+        with conn:
+            for i, t in enumerate(DEFAULT_SMS_TEMPLATES):
+                conn.execute(
+                    "INSERT INTO sms_templates (label, body, position) VALUES (?, ?, ?)",
+                    (t["label"], t["body"], i),
+                )
+        rows = conn.execute("SELECT * FROM sms_templates ORDER BY position, id").fetchall()
+    conn.close()
+    return [{"id": r["id"], "label": r["label"], "body": r["body"]} for r in rows]
+
+
+@app.post("/api/sms-templates")
+def create_sms_template(body: dict, user: dict = Depends(get_current_user)):
+    conn = _get_conn()
+    label = body.get("label", "New Template")
+    text = body.get("body", "")
+    max_pos = conn.execute("SELECT COALESCE(MAX(position), -1) as mp FROM sms_templates").fetchone()["mp"]
+    with conn:
+        conn.execute(
+            "INSERT INTO sms_templates (label, body, position) VALUES (?, ?, ?)",
+            (label, text, max_pos + 1),
+        )
+    row = conn.execute("SELECT * FROM sms_templates ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    return {"id": row["id"], "label": row["label"], "body": row["body"]}
+
+
+@app.put("/api/sms-templates/{template_id}")
+def update_sms_template(template_id: int, body: dict, user: dict = Depends(get_current_user)):
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM sms_templates WHERE id = ?", (template_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Template not found"}
+    updates = {}
+    if "label" in body:
+        updates["label"] = body["label"]
+    if "body" in body:
+        updates["body"] = body["body"]
+    if updates:
+        sets = ", ".join(f"{k}=?" for k in updates)
+        vals = list(updates.values()) + [template_id]
+        with conn:
+            conn.execute(f"UPDATE sms_templates SET {sets} WHERE id=?", vals)
+    updated = conn.execute("SELECT * FROM sms_templates WHERE id = ?", (template_id,)).fetchone()
+    conn.close()
+    return {"id": updated["id"], "label": updated["label"], "body": updated["body"]}
+
+
+@app.delete("/api/sms-templates/{template_id}")
+def delete_sms_template(template_id: int, user: dict = Depends(get_current_user)):
+    conn = _get_conn()
+    row = conn.execute("SELECT * FROM sms_templates WHERE id = ?", (template_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"error": "Template not found"}
+    with conn:
+        conn.execute("DELETE FROM sms_templates WHERE id = ?", (template_id,))
+    conn.close()
+    return {"success": True}
+
+
+_quo_phone_number_id: str | None = None
+
+
+def _get_quo_phone_number_id() -> str | None:
+    """Resolve and cache the Quo phoneNumberId from the configured phone number."""
+    global _quo_phone_number_id
+    if _quo_phone_number_id:
+        return _quo_phone_number_id
+    import requests as _req
+    api_key = os.environ.get("QUO_API_KEY", "")
+    from_number = os.environ.get("QUO_PHONE_NUMBER", "")
+    if not api_key or not from_number:
+        return None
+    resp = _req.get(
+        "https://api.openphone.com/v1/phone-numbers",
+        headers={"Authorization": api_key},
+        timeout=10,
+    )
+    if resp.status_code != 200:
+        return None
+    for pn in resp.json().get("data", []):
+        if pn.get("phoneNumber") == from_number:
+            _quo_phone_number_id = pn["id"]
+            return _quo_phone_number_id
+    return None
+
+
+@app.get("/api/quo/messages")
+def quo_messages(phone: str, user: dict = Depends(get_current_user)):
+    """Fetch SMS messages from the Quo API for a given participant phone number."""
+    import requests as _req
+
+    api_key = os.environ.get("QUO_API_KEY", "")
+    if not api_key:
+        return {"error": "Quo is not configured"}
+
+    pn_id = _get_quo_phone_number_id()
+    if not pn_id:
+        return {"error": "Could not resolve Quo phone number ID"}
+
+    resp = _req.get(
+        "https://api.openphone.com/v1/messages",
+        headers={"Authorization": api_key},
+        params={"phoneNumberId": pn_id, "participants[]": phone, "maxResults": 50},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        return {"error": f"Quo API error ({resp.status_code}): {resp.text[:200]}"}
+
+    data = resp.json().get("data", [])
+    messages = []
+    for m in data:
+        messages.append({
+            "id": m.get("id", ""),
+            "direction": "inbound" if m.get("direction") == "incoming" else "outbound",
+            "body": m.get("text") or m.get("content") or "",
+            "from": m.get("from", ""),
+            "to": m.get("to", []),
+            "status": m.get("status", ""),
+            "created_at": m.get("createdAt", ""),
+        })
+    # Quo returns newest first; reverse for chronological display
+    messages.reverse()
+    return {"messages": messages}
+
+
+@app.post("/api/quo/send")
+def quo_send(body: dict, user: dict = Depends(get_current_user)):
+    """Send an SMS via the Quo (OpenPhone) API."""
+    import requests
+
+    api_key = os.environ.get("QUO_API_KEY", "")
+    from_number = os.environ.get("QUO_PHONE_NUMBER", "")
+    if not api_key or not from_number:
+        return {"error": "Quo is not configured (QUO_API_KEY / QUO_PHONE_NUMBER)"}
+
+    lead_id = body.get("lead_id")
+    to = body.get("to", "")
+    content = body.get("content", "")
+    if not lead_id or not to or not content:
+        return {"error": "Missing required fields: lead_id, to, content"}
+
+    resp = requests.post(
+        "https://api.openphone.com/v1/messages",
+        headers={"Authorization": api_key, "Content-Type": "application/json"},
+        json={"content": content, "from": from_number, "to": [to]},
+        timeout=15,
+    )
+
+    if resp.status_code not in (200, 201, 202):
+        detail = resp.text[:200]
+        return {"error": f"Quo API error ({resp.status_code}): {detail}"}
+
+    return {"success": True}
+
+
 @app.post("/api/webhooks/twilio")
 async def twilio_inbound(request: Request):
     """Receive inbound SMS from Twilio. Configure your Twilio number's webhook to point here."""
@@ -856,8 +1334,8 @@ async def twilio_inbound(request: Request):
 
     # Match sender to a lead by phone number
     lead = conn.execute(
-        "SELECT * FROM leads WHERE phone_1 = ? OR phone_2 = ? OR phone_3 = ?",
-        (from_number, from_number, from_number),
+        "SELECT l.* FROM leads l JOIN lead_phones lp ON lp.lead_id = l.id WHERE lp.phone = ? LIMIT 1",
+        (from_number,),
     ).fetchone()
 
     if lead:
@@ -891,6 +1369,8 @@ if DIST_DIR.exists():
     # Catch-all: serve index.html for any non-API route (SPA routing)
     @app.get("/{path:path}")
     async def serve_spa(path: str):
+        if path.startswith("api/"):
+            return {"error": "Not found"}, 404
         file_path = DIST_DIR / path
         if file_path.exists() and file_path.is_file():
             return FileResponse(str(file_path))

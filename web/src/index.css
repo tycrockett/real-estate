@@ -378,7 +378,7 @@ header {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  min-height: calc(100vh - 180px);
+  height: calc(100vh - 100px);
 }
 
 .leads-list {
@@ -482,6 +482,7 @@ header {
 /* Leads detail */
 .leads-detail {
   flex: 1;
+  min-height: 0;
   background: var(--bg);
   padding: 20px 24px;
   overflow-y: auto;
@@ -595,6 +596,170 @@ header {
 .leads-field-value.empty {
   color: var(--text-dim);
   font-style: italic;
+}
+
+.leads-phones-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.leads-phone-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.leads-phone-row .leads-field-value,
+.leads-phone-row .editable-field-edit {
+  flex: 1;
+}
+
+.btn-remove-phone {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.btn-remove-phone:hover {
+  color: var(--red);
+}
+
+.btn-add-phone {
+  background: none;
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 8px;
+}
+.btn-add-phone:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-sms-phone {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 2px 4px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+}
+.btn-sms-phone:hover {
+  color: var(--accent);
+}
+
+/* SMS Modal */
+.sms-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.sms-modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  width: 480px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+.sms-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.sms-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 20px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+}
+.sms-modal-close:hover {
+  color: var(--text);
+}
+.sms-modal-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.sms-template-select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.sms-draft {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 100px;
+}
+.sms-draft:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.sms-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.sms-error {
+  color: var(--red);
+  font-size: 12px;
+}
+.sms-success {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 600;
+}
+.btn-sms-send {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 8px 20px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-sms-send:hover {
+  opacity: 0.9;
+}
+.btn-sms-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .editable-field-edit {
@@ -1036,7 +1201,7 @@ header {
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
-  min-height: calc(100vh - 180px);
+  height: calc(100vh - 100px);
 }
 
 .msg-list {
@@ -1099,9 +1264,11 @@ header {
 /* Conversation */
 .msg-conversation {
   flex: 1;
+  min-width: 0;
   background: var(--bg);
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .msg-conv-header {
@@ -1163,6 +1330,7 @@ header {
 /* Thread */
 .msg-thread {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 20px;
   display: flex;
@@ -1419,6 +1587,165 @@ header {
 }
 
 .auth-logout:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+/* Settings Page */
+.settings-page {
+  padding: 24px;
+  max-width: 720px;
+  height: calc(100vh - 100px);
+  overflow-y: auto;
+}
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.settings-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.settings-section-header h2 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+.settings-hint {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin: 0;
+}
+.settings-hint code {
+  background: var(--bg);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.btn-add-template {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px 10px;
+  font-family: inherit;
+}
+.btn-add-template:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.templates-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.template-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.template-card.editing {
+  border-color: var(--accent);
+}
+.template-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.template-card-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.template-card-body {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.template-card-actions {
+  display: flex;
+  gap: 6px;
+}
+.template-label-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 600;
+}
+.template-label-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.template-body-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 8px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+  line-height: 1.5;
+}
+.template-body-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.btn-template-save {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-template-save:disabled {
+  opacity: 0.5;
+}
+.btn-template-cancel,
+.btn-template-edit {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-template-cancel:hover,
+.btn-template-edit:hover {
+  border-color: var(--text-dim);
+  color: var(--text);
+}
+.btn-template-delete {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn-template-delete:hover {
   border-color: var(--red);
   color: var(--red);
 }

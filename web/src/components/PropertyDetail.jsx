@@ -245,11 +245,11 @@ export default function PropertyDetail({ property, onPropertyUpdate }) {
             </div>
 
             {/* Contact info */}
-            {(lead.phone_1 || lead.email_1) && (
+            {((lead.phones || []).length > 0 || lead.email_1) && (
               <div className="lead-contact">
-                {lead.phone_1 && <span className="lead-contact-item">{lead.phone_1}</span>}
-                {lead.phone_2 && <span className="lead-contact-item">{lead.phone_2}</span>}
-                {lead.phone_3 && <span className="lead-contact-item">{lead.phone_3}</span>}
+                {(lead.phones || []).map(p => (
+                  p.phone && <span key={p.id} className="lead-contact-item">{p.phone}</span>
+                ))}
                 {lead.email_1 && <span className="lead-contact-item">{lead.email_1}</span>}
                 {lead.email_2 && <span className="lead-contact-item">{lead.email_2}</span>}
               </div>

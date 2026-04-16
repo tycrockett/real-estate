@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS properties (
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
     updated_at TEXT,
+    normalized_address TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     UNIQUE(source, source_id)
 );
@@ -107,6 +108,25 @@ CREATE TABLE IF NOT EXISTS valuations (
 );
 """
 
+CREATE_LEAD_PHONES_TABLE = """
+CREATE TABLE IF NOT EXISTS lead_phones (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id INTEGER NOT NULL REFERENCES leads(id),
+    phone TEXT NOT NULL DEFAULT '',
+    type TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+CREATE_SMS_TEMPLATES_TABLE = """
+CREATE TABLE IF NOT EXISTS sms_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    label TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0
+);
+"""
+
 CREATE_SHORT_CODES_TABLE = """
 CREATE TABLE IF NOT EXISTS short_codes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +134,18 @@ CREATE TABLE IF NOT EXISTS short_codes (
     property_id INTEGER NOT NULL REFERENCES properties(id),
     created_at TEXT NOT NULL,
     click_count INTEGER DEFAULT 0
+);
+"""
+
+CREATE_NOTIFICATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    body TEXT DEFAULT '',
+    lead_id INTEGER REFERENCES leads(id),
+    read INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
 );
 """
 
@@ -151,11 +183,102 @@ class PropertyStore:
             self._conn.execute(CREATE_TABLE)
             self._conn.execute(CREATE_CONTACTS_TABLE)
             self._conn.execute(CREATE_LEADS_TABLE)
+            self._conn.execute(CREATE_LEAD_PHONES_TABLE)
+            self._conn.execute(CREATE_SMS_TEMPLATES_TABLE)
             self._conn.execute(CREATE_MESSAGES_TABLE)
             self._conn.execute(CREATE_VALUATIONS_TABLE)
             self._conn.execute(CREATE_SHORT_CODES_TABLE)
+            self._conn.execute(CREATE_NOTIFICATIONS_TABLE)
             for idx in CREATE_INDEXES:
                 self._conn.execute(idx)
+            self._migrate_add_normalized_address()
+            self._migrate_lead_phones()
+
+    def _migrate_add_normalized_address(self) -> None:
+        """Add normalized_address column if it doesn't exist yet."""
+        cols = [r[1] for r in self._conn.execute("PRAGMA table_info(properties)").fetchall()]
+        if "normalized_address" not in cols:
+            self._conn.execute("ALTER TABLE properties ADD COLUMN normalized_address TEXT")
+
+    def _migrate_lead_phones(self) -> None:
+        """One-time migration: move phone_1/2/3 from leads into lead_phones table."""
+        has_phones = self._conn.execute("SELECT COUNT(*) as cnt FROM lead_phones").fetchone()["cnt"]
+        if has_phones > 0:
+            return
+        rows = self._conn.execute(
+            "SELECT id, phone_1, phone_1_type, phone_2, phone_2_type, phone_3, phone_3_type FROM leads"
+        ).fetchall()
+        with self._conn:
+            for row in rows:
+                for i in range(1, 4):
+                    phone = row[f"phone_{i}"] or ""
+                    ptype = row[f"phone_{i}_type"] or ""
+                    if phone:
+                        self._conn.execute(
+                            "INSERT INTO lead_phones (lead_id, phone, type, position) VALUES (?, ?, ?, ?)",
+                            (row["id"], phone, ptype, i - 1),
+                        )
+
+    def get_lead_phones(self, lead_id: int) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM lead_phones WHERE lead_id = ? ORDER BY position, id",
+            (lead_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_leads_phones(self, lead_ids: list[int]) -> dict[int, list[dict]]:
+        if not lead_ids:
+            return {}
+        placeholders = ",".join("?" for _ in lead_ids)
+        rows = self._conn.execute(
+            f"SELECT * FROM lead_phones WHERE lead_id IN ({placeholders}) ORDER BY position, id",
+            lead_ids,
+        ).fetchall()
+        result: dict[int, list[dict]] = {lid: [] for lid in lead_ids}
+        for r in rows:
+            result[r["lead_id"]].append(dict(r))
+        return result
+
+    def add_lead_phone(self, lead_id: int, phone: str, phone_type: str = "") -> dict:
+        max_pos = self._conn.execute(
+            "SELECT COALESCE(MAX(position), -1) as mp FROM lead_phones WHERE lead_id = ?",
+            (lead_id,),
+        ).fetchone()["mp"]
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO lead_phones (lead_id, phone, type, position) VALUES (?, ?, ?, ?)",
+                (lead_id, phone, phone_type, max_pos + 1),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM lead_phones WHERE lead_id = ? ORDER BY id DESC LIMIT 1",
+            (lead_id,),
+        ).fetchone()
+        return dict(row)
+
+    def update_lead_phone(self, phone_id: int, **kwargs) -> dict | None:
+        allowed = {"phone", "type"}
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            row = self._conn.execute("SELECT * FROM lead_phones WHERE id = ?", (phone_id,)).fetchone()
+            return dict(row) if row else None
+        sets = ", ".join(f"{k}=?" for k in updates)
+        vals = list(updates.values()) + [phone_id]
+        with self._conn:
+            self._conn.execute(f"UPDATE lead_phones SET {sets} WHERE id=?", vals)
+        row = self._conn.execute("SELECT * FROM lead_phones WHERE id = ?", (phone_id,)).fetchone()
+        return dict(row) if row else None
+
+    def delete_lead_phone(self, phone_id: int) -> bool:
+        with self._conn:
+            self._conn.execute("DELETE FROM lead_phones WHERE id = ?", (phone_id,))
+        return True
+
+    def find_lead_by_phone(self, phone: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT l.* FROM leads l JOIN lead_phones lp ON lp.lead_id = l.id WHERE lp.phone = ? LIMIT 1",
+            (phone,),
+        ).fetchone()
+        return dict(row) if row else None
 
     def upsert(self, properties: list[Property]) -> UpsertResult:
         result = UpsertResult()
@@ -174,12 +297,12 @@ class PropertyStore:
                     self._conn.execute(
                         """INSERT INTO properties
                            (source, source_id, address, city, state, zip_code, price,
-                            data, first_seen, last_seen, status)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
+                            normalized_address, data, first_seen, last_seen, status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
                         (
                             prop.source, prop.source_id, prop.address, prop.city,
                             prop.state, prop.zip_code, prop.price,
-                            data_json, now, now,
+                            prop.normalized_address, data_json, now, now,
                         ),
                     )
                     result.new += 1
@@ -187,11 +310,11 @@ class PropertyStore:
                     self._conn.execute(
                         """UPDATE properties
                            SET address = ?, city = ?, state = ?, zip_code = ?, price = ?,
-                               data = ?, last_seen = ?, updated_at = ?, status = 'active'
+                               normalized_address = ?, data = ?, last_seen = ?, updated_at = ?, status = 'active'
                            WHERE id = ?""",
                         (
                             prop.address, prop.city, prop.state, prop.zip_code, prop.price,
-                            data_json, now, now, existing["id"],
+                            prop.normalized_address, data_json, now, now, existing["id"],
                         ),
                     )
                     result.updated += 1
@@ -372,8 +495,7 @@ class PropertyStore:
     def update_lead(self, lead_id: int, **kwargs) -> dict | None:
         now = datetime.now(UTC).isoformat()
         allowed = {
-            "status", "notes", "phone_1", "phone_1_type", "phone_2", "phone_2_type",
-            "phone_3", "phone_3_type", "email_1", "email_2", "skip_source", "custom_data",
+            "status", "notes", "email_1", "email_2", "skip_source", "custom_data",
         }
         updates = {k: v for k, v in kwargs.items() if k in allowed}
         if not updates:
@@ -435,6 +557,61 @@ class PropertyStore:
             (source, source_id),
         ).fetchone()
         return row["id"] if row else None
+
+    def create_notification(self, type: str, title: str, body: str = "", lead_id: int | None = None) -> dict:
+        now = datetime.now(UTC).isoformat()
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO notifications (type, title, body, lead_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                (type, title, body, lead_id, now),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM notifications ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return dict(row)
+
+    def get_notifications(self, unread_only: bool = False) -> list[dict]:
+        query = "SELECT * FROM notifications"
+        if unread_only:
+            query += " WHERE read = 0"
+        query += " ORDER BY created_at DESC"
+        return [dict(r) for r in self._conn.execute(query).fetchall()]
+
+    def mark_notification_read(self, notification_id: int) -> bool:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE notifications SET read = 1 WHERE id = ?", (notification_id,)
+            )
+        return True
+
+    def get_unread_count(self) -> int:
+        row = self._conn.execute("SELECT COUNT(*) as cnt FROM notifications WHERE read = 0").fetchone()
+        return row["cnt"]
+
+    def get_properties_missing_normalized_address(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT id, address, city, state, zip_code FROM properties "
+            "WHERE normalized_address IS NULL AND status = 'active'"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_normalized_address(self, property_id: int, normalized_address: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE properties SET normalized_address = ? WHERE id = ?",
+                (normalized_address, property_id),
+            )
+            # Also update the JSON data blob
+            row = self._conn.execute(
+                "SELECT data FROM properties WHERE id = ?", (property_id,)
+            ).fetchone()
+            if row:
+                data = json.loads(row["data"])
+                data["normalized_address"] = normalized_address
+                self._conn.execute(
+                    "UPDATE properties SET data = ? WHERE id = ?",
+                    (json.dumps(data), property_id),
+                )
 
     def close(self) -> None:
         self._conn.close()

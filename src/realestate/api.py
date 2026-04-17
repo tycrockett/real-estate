@@ -708,37 +708,50 @@ def intake_submit(body: dict):
 
     conn = _get_conn()
 
-    # Try to match existing property by normalized address first
-    row = conn.execute(
-        "SELECT id FROM properties WHERE normalized_address = ? AND status = 'active'",
-        (address,),
-    ).fetchone()
-
-    # Fall back to fuzzy matching on raw address
-    if not row:
-        normalized = _normalize_address_for_search(address)
-        addr_parts = normalized.split()
-        street_num = addr_parts[0] if addr_parts else ""
-        core_words = [w for w in addr_parts[1:] if w not in (
-            "N", "S", "E", "W", "NE", "NW", "SE", "SW",
-            "ST", "AVE", "DR", "RD", "BLVD", "LN", "CT", "CIR", "PL", "WAY", "TRL", "PKWY",
-        )]
-        core_name = " ".join(core_words)
-
-        row = conn.execute(
-            "SELECT id FROM properties WHERE UPPER(address) = ? AND status = 'active'",
-            (normalized,),
+    # Try to match existing lead by email first
+    row = None
+    if email:
+        lead_row = conn.execute(
+            "SELECT property_id FROM leads WHERE email_1 = ? LIMIT 1",
+            (email,),
         ).fetchone()
+        if lead_row:
+            row = conn.execute(
+                "SELECT id FROM properties WHERE id = ? AND status = 'active'",
+                (lead_row["property_id"],),
+            ).fetchone()
+
+    # Fall back to property address matching
+    if not row and address:
+        row = conn.execute(
+            "SELECT id FROM properties WHERE normalized_address = ? AND status = 'active'",
+            (address,),
+        ).fetchone()
+
         if not row:
+            normalized = _normalize_address_for_search(address)
+            addr_parts = normalized.split()
+            street_num = addr_parts[0] if addr_parts else ""
+            core_words = [w for w in addr_parts[1:] if w not in (
+                "N", "S", "E", "W", "NE", "NW", "SE", "SW",
+                "ST", "AVE", "DR", "RD", "BLVD", "LN", "CT", "CIR", "PL", "WAY", "TRL", "PKWY",
+            )]
+            core_name = " ".join(core_words)
+
             row = conn.execute(
-                "SELECT id FROM properties WHERE UPPER(address) LIKE ? AND status = 'active'",
-                (f"{normalized}%",),
+                "SELECT id FROM properties WHERE UPPER(address) = ? AND status = 'active'",
+                (normalized,),
             ).fetchone()
-        if not row and street_num and core_name:
-            row = conn.execute(
-                "SELECT id FROM properties WHERE UPPER(address) LIKE ? AND status = 'active'",
-                (f"%{street_num}%{core_name}%",),
-            ).fetchone()
+            if not row:
+                row = conn.execute(
+                    "SELECT id FROM properties WHERE UPPER(address) LIKE ? AND status = 'active'",
+                    (f"{normalized}%",),
+                ).fetchone()
+            if not row and street_num and core_name:
+                row = conn.execute(
+                    "SELECT id FROM properties WHERE UPPER(address) LIKE ? AND status = 'active'",
+                    (f"%{street_num}%{core_name}%",),
+                ).fetchone()
 
     if row:
         property_id = row["id"]

@@ -171,3 +171,22 @@ export async function refreshData() {
   const res = await authFetch(`${BASE}/refresh`, { method: 'POST' });
   return res.json();
 }
+
+export async function fetchNotifications(unreadOnly = false) {
+  const params = new URLSearchParams();
+  if (unreadOnly) params.set('unread_only', 'true');
+  const res = await authFetch(`${BASE}/notifications?${params}`);
+  return res.json();
+}
+
+export async function fetchUnreadCount() {
+  const res = await authFetch(`${BASE}/notifications/unread-count`);
+  return res.json();
+}
+
+export async function markNotificationRead(id) {
+  const res = await authFetch(`${BASE}/notifications/${id}/read`, {
+    method: 'PUT',
+  });
+  return res.json();
+}

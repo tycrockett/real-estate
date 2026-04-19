@@ -6,6 +6,7 @@ import LeadsPage from './components/LeadsPage'
 import MessagesPage from './components/MessagesPage'
 import SettingsPage from './components/SettingsPage'
 import AuthGate from './components/AuthGate'
+import NotificationsBell from './components/NotificationsBell'
 
 function Dashboard() {
   const [properties, setProperties] = useState([])
@@ -46,6 +47,12 @@ function AppContent() {
   const [tab, setTab] = useState('dashboard')
   const [refreshing, setRefreshing] = useState(false)
   const [refreshResult, setRefreshResult] = useState(null)
+  const [focusLeadId, setFocusLeadId] = useState(null)
+
+  const handleOpenLead = (leadId) => {
+    setFocusLeadId(leadId)
+    setTab('leads')
+  }
 
   const handleRefresh = async () => {
     setRefreshing(true)
@@ -87,11 +94,12 @@ function AppContent() {
             </span>
           )}
           {refreshResult?.error && <span className="refresh-result error">Refresh failed</span>}
+          <NotificationsBell onOpenLead={handleOpenLead} />
         </nav>
       </header>
 
       {tab === 'dashboard' && <Dashboard />}
-      {tab === 'leads' && <LeadsPage />}
+      {tab === 'leads' && <LeadsPage focusLeadId={focusLeadId} onFocusHandled={() => setFocusLeadId(null)} />}
       {tab === 'messages' && <MessagesPage />}
       {tab === 'settings' && <SettingsPage />}
     </>

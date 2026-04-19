@@ -39,7 +39,7 @@ function statusLabel(s) {
   return s.replace(/_/g, ' ')
 }
 
-export default function LeadsPage() {
+export default function LeadsPage({ focusLeadId, onFocusHandled }) {
   const [leads, setLeads] = useState([])
   const [statusFilter, setStatusFilter] = useState('')
   const [selectedId, setSelectedId] = useState(null)
@@ -59,7 +59,7 @@ export default function LeadsPage() {
   const handleCopyLink = async () => {
     const result = await getShortCode(selected.property_id)
     if (result.code) {
-      const url = `https://real-estate-intake.vercel.app/?p=${result.code}`
+      const url = `https://guardiangroup.co/contact?p=${result.code}`
       await navigator.clipboard.writeText(url)
       setLinkCopied(true)
       setTimeout(() => setLinkCopied(false), 2000)
@@ -77,6 +77,18 @@ export default function LeadsPage() {
       }
     })
   }, [statusFilter])
+
+  useEffect(() => {
+    if (!focusLeadId) return
+    const match = leads.find(l => l.id === focusLeadId)
+    if (match) {
+      setSelectedId(match.id)
+      setNotes(match.notes || '')
+      onFocusHandled && onFocusHandled()
+    } else if (!loading) {
+      setStatusFilter('')
+    }
+  }, [focusLeadId, leads, loading])
 
   const selected = leads.find(l => l.id === selectedId)
   const prop = selected?.property_data || {}
@@ -444,6 +456,9 @@ export default function LeadsPage() {
               </div>
             </div>
 
+            {/* Intake Submission */}
+            <IntakeSubmissionSection customData={selected.custom_data} />
+
             {/* Notes */}
             <div className="leads-detail-section">
               <span className="label">Notes</span>
@@ -517,6 +532,62 @@ export default function LeadsPage() {
             <p>Select a lead to view details</p>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+function humanizeKey(key) {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, c => c.toUpperCase())
+}
+
+function formatIntakeValue(val) {
+  if (val == null || val === '') return '—'
+  if (typeof val === 'boolean') return val ? 'Yes' : 'No'
+  if (typeof val === 'number') {
+    if (Math.abs(val) >= 1000) return val.toLocaleString()
+    return String(val)
+  }
+  if (Array.isArray(val)) return val.length ? val.join(', ') : '—'
+  if (typeof val === 'object') return JSON.stringify(val)
+  return String(val)
+}
+
+function flattenIntake(obj, prefix = '') {
+  const out = []
+  for (const [key, value] of Object.entries(obj || {})) {
+    const label = prefix ? `${prefix} / ${humanizeKey(key)}` : humanizeKey(key)
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      out.push(...flattenIntake(value, label))
+    } else {
+      out.push([label, value])
+    }
+  }
+  return out
+}
+
+function IntakeSubmissionSection({ customData }) {
+  let parsed = customData
+  if (typeof customData === 'string') {
+    try { parsed = JSON.parse(customData) } catch { parsed = null }
+  }
+  if (!parsed || typeof parsed !== 'object') return null
+  const entries = flattenIntake(parsed)
+  if (entries.length === 0) return null
+
+  return (
+    <div className="leads-detail-section">
+      <span className="label">Intake Submission</span>
+      <div className="leads-detail-grid">
+        {entries.map(([label, value]) => (
+          <div className="leads-detail-field" key={label}>
+            <span className="leads-field-label">{label}</span>
+            <span className="leads-field-value">{formatIntakeValue(value)}</span>
+          </div>
+        ))}
       </div>
     </div>
   )

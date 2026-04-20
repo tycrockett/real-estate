@@ -65,12 +65,30 @@ def refresh_data(user: dict = Depends(get_current_user)):
     removed = store.mark_removed("meridian_nod", current_ids)
     store.close()
 
+    conn = _get_conn()
+    missing_ids = [r["id"] for r in conn.execute(
+        "SELECT p.id FROM properties p "
+        "LEFT JOIN valuations v ON v.property_id = p.id "
+        "WHERE p.status = 'active' AND v.id IS NULL"
+    ).fetchall()]
+    valuations_computed = 0
+    valuations_failed = 0
+    for pid in missing_ids:
+        try:
+            if _compute_valuation(conn, pid):
+                valuations_computed += 1
+        except Exception:
+            valuations_failed += 1
+    conn.close()
+
     return {
         "fetched": len(properties),
         "new": result.new,
         "updated": result.updated,
         "unchanged": result.unchanged,
         "removed": removed,
+        "valuations_computed": valuations_computed,
+        "valuations_failed": valuations_failed,
     }
 
 
@@ -363,13 +381,11 @@ def get_stats(user: dict = Depends(get_current_user)):
 MARKET_ADJUSTMENT = 1.10  # Conservative 10% uplift
 
 
-@app.post("/api/properties/{property_id}/equity")
-def estimate_equity(property_id: int, user: dict = Depends(get_current_user)):
-    conn = _get_conn()
+def _compute_valuation(conn: sqlite3.Connection, property_id: int) -> dict | None:
+    """Compute equity valuation for a property and persist it. Returns val_data or None if property missing."""
     row = conn.execute("SELECT * FROM properties WHERE id = ?", (property_id,)).fetchone()
     if not row:
-        conn.close()
-        return {"error": "Property not found"}
+        return None
 
     data = json.loads(row["data"])
     raw = data.get("raw", {})
@@ -379,12 +395,10 @@ def estimate_equity(property_id: int, user: dict = Depends(get_current_user)):
     orig_mtg = raw.get("orig_mtg_amt")
     orig_rec_date_str = raw.get("orig_rec_date", "")
 
-    # Step 1: Get assessed value from UGRC
     ugrc = lookup_ugrc_value(address, county, data.get("city", ""))
     assessed_value = ugrc.get("total_mkt_value")
     estimated_market = round(assessed_value * MARKET_ADJUSTMENT) if assessed_value else None
 
-    # Step 2: Estimate remaining balance from amortization
     remaining = None
     amort = {}
     if orig_mtg and orig_rec_date_str:
@@ -396,14 +410,12 @@ def estimate_equity(property_id: int, user: dict = Depends(get_current_user)):
         except (ValueError, IndexError):
             pass
 
-    # Step 3: Calculate equity
     estimated_equity = None
     equity_percent = None
     if estimated_market and remaining is not None:
         estimated_equity = round(estimated_market - remaining)
         equity_percent = round((estimated_equity / estimated_market) * 100, 1) if estimated_market > 0 else None
 
-    # Store it
     now = datetime.now(UTC).isoformat()
     existing = conn.execute(
         "SELECT id FROM valuations WHERE property_id = ?", (property_id,)
@@ -438,7 +450,17 @@ def estimate_equity(property_id: int, user: dict = Depends(get_current_user)):
                 [property_id] + list(val_data.values()),
             )
 
+    return val_data
+
+
+@app.post("/api/properties/{property_id}/equity")
+def estimate_equity(property_id: int, user: dict = Depends(get_current_user)):
+    conn = _get_conn()
+    val_data = _compute_valuation(conn, property_id)
     conn.close()
+
+    if val_data is None:
+        return {"error": "Property not found"}
 
     return {
         "success": True,
@@ -838,10 +860,19 @@ def intake_submit(body: dict):
         notif_body += f" | Balance: ${loan_balance:,.0f}"
 
     with conn:
-        conn.execute(
-            "INSERT INTO notifications (type, title, body, lead_id, created_at) VALUES (?, ?, ?, ?, ?)",
-            ("intake_lead", "New intake lead", notif_body, lead_id, now),
-        )
+        existing_notif = conn.execute(
+            "SELECT id FROM notifications WHERE lead_id = ? LIMIT 1", (lead_id,)
+        ).fetchone()
+        if existing_notif:
+            conn.execute(
+                "UPDATE notifications SET type = ?, title = ?, body = ?, read = 0, created_at = ? WHERE id = ?",
+                ("intake_lead", "New intake lead", notif_body, now, existing_notif["id"]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO notifications (type, title, body, lead_id, created_at) VALUES (?, ?, ?, ?, ?)",
+                ("intake_lead", "New intake lead", notif_body, lead_id, now),
+            )
 
     conn.close()
 

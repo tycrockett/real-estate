@@ -91,6 +91,7 @@ function AppContent() {
           {refreshResult && !refreshResult.error && (
             <span className="refresh-result">
               +{refreshResult.new} new, {refreshResult.updated} updated, {refreshResult.removed} removed
+              {refreshResult.valuations_computed > 0 && `, ${refreshResult.valuations_computed} equity`}
             </span>
           )}
           {refreshResult?.error && <span className="refresh-result error">Refresh failed</span>}

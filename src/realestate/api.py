@@ -278,6 +278,7 @@ def list_properties(
     doc_type: str | None = None,
     lien_position: str | None = None,
     property_type_raw: str | None = None,
+    owner_occupied: str | None = None,
     status: str = "active",
     user: dict = Depends(get_current_user),
 ):
@@ -303,6 +304,9 @@ def list_properties(
     if property_type_raw:
         query += " AND LOWER(json_extract(data, '$.raw.property_type_raw')) = LOWER(?)"
         params.append(property_type_raw)
+    if owner_occupied:
+        query += " AND json_extract(data, '$.raw.owner_occupied') = ?"
+        params.append(owner_occupied)
 
     query += " ORDER BY first_seen DESC"
     rows = conn.execute(query, params).fetchall()
@@ -951,6 +955,53 @@ def create_lead(property_id: int, user: dict = Depends(get_current_user)):
     lead = conn.execute("SELECT * FROM leads WHERE property_id = ?", (property_id,)).fetchone()
     conn.close()
     return {"lead": dict(lead)}
+
+
+@app.post("/api/leads/bulk-create")
+def bulk_create_leads(body: dict, user: dict = Depends(get_current_user)):
+    """Create leads for multiple properties. Skips properties that already have a lead."""
+    property_ids = body.get("property_ids") or []
+    if not isinstance(property_ids, list) or not property_ids:
+        return {"error": "property_ids (non-empty list) required"}
+
+    property_ids = [int(p) for p in property_ids]
+    conn = _get_conn()
+    placeholders = ",".join("?" * len(property_ids))
+
+    valid_ids = {
+        r["id"] for r in conn.execute(
+            f"SELECT id FROM properties WHERE id IN ({placeholders})", property_ids
+        ).fetchall()
+    }
+    existing_ids = {
+        r["property_id"] for r in conn.execute(
+            f"SELECT property_id FROM leads WHERE property_id IN ({placeholders})", property_ids
+        ).fetchall()
+    }
+
+    to_create = [pid for pid in property_ids if pid in valid_ids and pid not in existing_ids]
+    missing = [pid for pid in property_ids if pid not in valid_ids]
+
+    now = datetime.now(UTC).isoformat()
+    with conn:
+        for pid in to_create:
+            conn.execute(
+                "INSERT INTO leads (property_id, status, created_at, updated_at) VALUES (?, 'new', ?, ?)",
+                (pid, now, now),
+            )
+
+    lead_rows = conn.execute(
+        f"SELECT * FROM leads WHERE property_id IN ({placeholders})", property_ids
+    ).fetchall()
+    leads_by_property = {r["property_id"]: dict(r) for r in lead_rows}
+    conn.close()
+
+    return {
+        "created": len(to_create),
+        "skipped_existing": len(existing_ids),
+        "missing": len(missing),
+        "leads": leads_by_property,
+    }
 
 
 @app.put("/api/leads/{lead_id}")

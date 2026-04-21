@@ -63,6 +63,15 @@ export async function createLead(propertyId) {
   return res.json();
 }
 
+export async function bulkCreateLeads(propertyIds) {
+  const res = await authFetch(`${BASE}/leads/bulk-create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ property_ids: propertyIds }),
+  });
+  return res.json();
+}
+
 export async function updateLead(leadId, updates) {
   const res = await authFetch(`${BASE}/leads/${leadId}`, {
     method: 'PUT',

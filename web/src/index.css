@@ -238,6 +238,64 @@ h1 {
   font-variant-numeric: tabular-nums;
 }
 
+.property-table th.checkbox-col,
+.property-table td.checkbox-col {
+  width: 36px;
+  padding-right: 0;
+  cursor: default;
+}
+
+.property-table td.checkbox-col input,
+.property-table th.checkbox-col input {
+  cursor: pointer;
+}
+
+.bulk-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.bulk-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.bulk-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.bulk-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bulk-btn.secondary {
+  background: transparent;
+  color: var(--text-dim);
+  border-color: var(--border);
+}
+
+.bulk-result {
+  color: var(--green);
+  font-size: 12px;
+}
+
+.bulk-result.error {
+  color: var(--red);
+}
+
 /* Doc type badges */
 .badge {
   display: inline-block;

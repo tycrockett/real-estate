@@ -22,6 +22,16 @@ export default function StatsBar({ stats, filters, onFilter }) {
     }
   }
 
+  const setFilter = (key, value) => {
+    if (value) {
+      onFilter({ ...filters, [key]: value })
+    } else {
+      const next = { ...filters }
+      delete next[key]
+      onFilter(next)
+    }
+  }
+
   return (
     <div className="stats-bar">
       <div
@@ -56,16 +66,7 @@ export default function StatsBar({ stats, filters, onFilter }) {
         <select
           className="prop-type-select"
           value={filters.property_type_raw || ''}
-          onChange={e => {
-            const val = e.target.value
-            if (val) {
-              onFilter({ ...filters, property_type_raw: val })
-            } else {
-              const next = { ...filters }
-              delete next.property_type_raw
-              onFilter(next)
-            }
-          }}
+          onChange={e => setFilter('property_type_raw', e.target.value)}
         >
           <option value="">Property Type</option>
           <option value="SFR">SFR</option>
@@ -74,6 +75,31 @@ export default function StatsBar({ stats, filters, onFilter }) {
           <option value="RESIDENTIAL (NEC)">Residential</option>
           <option value="MOBILE HOME">Mobile Home</option>
           <option value="MANUFACTURED HOME">Manufactured</option>
+        </select>
+      </div>
+      <div className="prop-type-filter">
+        <select
+          className="prop-type-select"
+          value={filters.lien_position || ''}
+          onChange={e => setFilter('lien_position', e.target.value)}
+        >
+          <option value="">Lien Position</option>
+          {stats.by_lien_position.map(l => (
+            <option key={l.lien} value={l.lien}>
+              {l.lien === '1' ? '1st' : l.lien === '2' ? '2nd' : l.lien === '3' ? '3rd' : `${l.lien}th`} ({l.count})
+            </option>
+          ))}
+        </select>
+      </div>
+      <div className="prop-type-filter">
+        <select
+          className="prop-type-select"
+          value={filters.owner_occupied || ''}
+          onChange={e => setFilter('owner_occupied', e.target.value)}
+        >
+          <option value="">Owner Occupied</option>
+          <option value="Y">Owner occupied</option>
+          <option value="N">Not owner occupied</option>
         </select>
       </div>
       <div className="county-chips">

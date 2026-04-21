@@ -1,5 +1,6 @@
 import { useState, useMemo, Fragment } from 'react'
 import PropertyDetail from './PropertyDetail'
+import { bulkCreateLeads } from '../api'
 
 function docTypeBadge(property) {
   const docType = property.raw?.doc_type || ''
@@ -65,12 +66,62 @@ function SortArrow({ column, sortConfig }) {
 export default function PropertyTable({ properties, loading, onPropertyUpdate }) {
   const [expandedId, setExpandedId] = useState(null)
   const [sortConfig, setSortConfig] = useState({ key: 'score', dir: 'desc' })
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
+  const [bulkLoading, setBulkLoading] = useState(false)
+  const [bulkResult, setBulkResult] = useState(null)
 
   const handleSort = (key) => {
     setSortConfig(prev => ({
       key,
       dir: prev.key === key && prev.dir === 'desc' ? 'asc' : 'desc',
     }))
+  }
+
+  const toggleSelected = (id) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const selectableIds = useMemo(
+    () => properties.filter(p => !p._lead).map(p => p._id),
+    [properties],
+  )
+  const allSelected = selectableIds.length > 0 && selectableIds.every(id => selectedIds.has(id))
+  const someSelected = selectedIds.size > 0 && !allSelected
+
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(selectableIds))
+    }
+  }
+
+  const handleBulkCreate = async () => {
+    if (selectedIds.size === 0) return
+    setBulkLoading(true)
+    setBulkResult(null)
+    try {
+      const ids = Array.from(selectedIds)
+      const result = await bulkCreateLeads(ids)
+      if (result.leads && onPropertyUpdate) {
+        for (const pid of ids) {
+          const lead = result.leads[pid]
+          if (lead) onPropertyUpdate(pid, { _lead: lead })
+        }
+      }
+      setBulkResult(result)
+      setSelectedIds(new Set())
+      setTimeout(() => setBulkResult(null), 5000)
+    } catch {
+      setBulkResult({ error: true })
+      setTimeout(() => setBulkResult(null), 5000)
+    }
+    setBulkLoading(false)
   }
 
   const sorted = useMemo(() => {
@@ -145,60 +196,108 @@ export default function PropertyTable({ properties, loading, onPropertyUpdate })
   ]
 
   return (
-    <table className="property-table">
-      <thead>
-        <tr>
-          {columns.map(col => (
-            <th key={col.key} onClick={() => handleSort(col.key)}>
-              {col.label}
-              <SortArrow column={col.key} sortConfig={sortConfig} />
-            </th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {sorted.map(prop => {
-          const id = prop._id
-          const isExpanded = expandedId === id
-          return (
-            <Fragment key={id}>
-              <tr
-                className="clickable"
-                onClick={() => setExpandedId(isExpanded ? null : id)}
+    <>
+      {(selectedIds.size > 0 || bulkResult) && (
+        <div className="bulk-action-bar">
+          {selectedIds.size > 0 && (
+            <>
+              <span>{selectedIds.size} selected</span>
+              <button
+                className="bulk-btn"
+                onClick={handleBulkCreate}
+                disabled={bulkLoading}
               >
-                <td>
-                  <span className="score-pill" style={{ color: scoreColor(prop._score) }}>
-                    {prop._score?.toFixed(1) || '—'}
-                  </span>
-                </td>
-                <td className="price">{formatPrice(prop.price)}</td>
-                <td className="price" style={{
-                  color: prop._valuation?.estimated_equity > 0 ? 'var(--green)'
-                       : prop._valuation?.estimated_equity < 0 ? 'var(--red)' : 'var(--text-dim)'
-                }}>
-                  {prop._valuation?.estimated_equity != null
-                    ? formatPrice(prop._valuation.estimated_equity)
-                    : '—'}
-                </td>
-                <td>{loanAge(prop.raw?.orig_rec_date)}</td>
-                <td>{docTypeBadge(prop)}</td>
-                <td>{prop.raw?.fore_effective || '—'}</td>
-                <td>{foreAge(prop.raw?.fore_effective)}</td>
-              </tr>
-              {isExpanded && (
-                <tr className="detail-row">
-                  <td colSpan={columns.length}>
-                    <PropertyDetail
-                      property={prop}
-                      onPropertyUpdate={onPropertyUpdate}
+                {bulkLoading ? 'Creating...' : `Create ${selectedIds.size} lead${selectedIds.size === 1 ? '' : 's'}`}
+              </button>
+              <button className="bulk-btn secondary" onClick={() => setSelectedIds(new Set())}>
+                Clear
+              </button>
+            </>
+          )}
+          {bulkResult && !bulkResult.error && (
+            <span className="bulk-result">
+              Created {bulkResult.created}
+              {bulkResult.skipped_existing > 0 && `, ${bulkResult.skipped_existing} already existed`}
+            </span>
+          )}
+          {bulkResult?.error && <span className="bulk-result error">Bulk create failed</span>}
+        </div>
+      )}
+      <table className="property-table">
+        <thead>
+          <tr>
+            <th className="checkbox-col" onClick={(e) => e.stopPropagation()}>
+              <input
+                type="checkbox"
+                checked={allSelected}
+                ref={el => { if (el) el.indeterminate = someSelected }}
+                onChange={toggleAll}
+                disabled={selectableIds.length === 0}
+                title={selectableIds.length === 0 ? 'All visible properties already have leads' : 'Select all'}
+              />
+            </th>
+            {columns.map(col => (
+              <th key={col.key} onClick={() => handleSort(col.key)}>
+                {col.label}
+                <SortArrow column={col.key} sortConfig={sortConfig} />
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map(prop => {
+            const id = prop._id
+            const isExpanded = expandedId === id
+            const hasLead = !!prop._lead
+            return (
+              <Fragment key={id}>
+                <tr
+                  className="clickable"
+                  onClick={() => setExpandedId(isExpanded ? null : id)}
+                >
+                  <td className="checkbox-col" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(id)}
+                      onChange={() => toggleSelected(id)}
+                      disabled={hasLead}
+                      title={hasLead ? 'Lead already exists' : 'Select for bulk action'}
                     />
                   </td>
+                  <td>
+                    <span className="score-pill" style={{ color: scoreColor(prop._score) }}>
+                      {prop._score?.toFixed(1) || '—'}
+                    </span>
+                  </td>
+                  <td className="price">{formatPrice(prop.price)}</td>
+                  <td className="price" style={{
+                    color: prop._valuation?.estimated_equity > 0 ? 'var(--green)'
+                         : prop._valuation?.estimated_equity < 0 ? 'var(--red)' : 'var(--text-dim)'
+                  }}>
+                    {prop._valuation?.estimated_equity != null
+                      ? formatPrice(prop._valuation.estimated_equity)
+                      : '—'}
+                  </td>
+                  <td>{loanAge(prop.raw?.orig_rec_date)}</td>
+                  <td>{docTypeBadge(prop)}</td>
+                  <td>{prop.raw?.fore_effective || '—'}</td>
+                  <td>{foreAge(prop.raw?.fore_effective)}</td>
                 </tr>
-              )}
-            </Fragment>
-          )
-        })}
-      </tbody>
-    </table>
+                {isExpanded && (
+                  <tr className="detail-row">
+                    <td colSpan={columns.length + 1}>
+                      <PropertyDetail
+                        property={prop}
+                        onPropertyUpdate={onPropertyUpdate}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            )
+          })}
+        </tbody>
+      </table>
+    </>
   )
 }

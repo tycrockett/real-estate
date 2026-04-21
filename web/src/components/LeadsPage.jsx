@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react'
 import { fetchLeads, updateLead, getShortCode, addLeadPhone, updateLeadPhone, removeLeadPhone, sendQuoMessage, fetchSmsTemplates } from '../api'
 
 const LEAD_STATUSES = [
-  'new', 'contacted', 'callback', 'interested',
+  'new', 'contactable', 'contacted', 'callback', 'interested',
   'negotiating', 'under_contract', 'closed', 'dead',
 ]
 
 const STATUS_COLORS = {
   new: 'var(--accent)',
+  contactable: 'var(--cyan)',
   contacted: 'var(--yellow)',
   callback: 'var(--orange)',
   interested: 'var(--green)',

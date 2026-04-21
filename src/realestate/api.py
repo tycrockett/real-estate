@@ -928,7 +928,7 @@ def unread_notification_count(user: dict = Depends(get_current_user)):
     return {"count": count}
 
 
-LEAD_STATUSES = ["new", "contacted", "callback", "interested", "negotiating", "under_contract", "closed", "dead"]
+LEAD_STATUSES = ["new", "contactable", "contacted", "callback", "interested", "negotiating", "under_contract", "closed", "dead"]
 
 
 @app.post("/api/properties/{property_id}/create-lead")

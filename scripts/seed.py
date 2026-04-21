@@ -58,7 +58,7 @@ TRUSTEES = [
 
 PHONE_TYPES = ["mobile", "landline", "work", "home", ""]
 
-LEAD_STATUSES = ["new", "contacted", "callback", "interested", "negotiating", "dead"]
+LEAD_STATUSES = ["new", "contactable", "contacted", "callback", "interested", "negotiating", "dead"]
 
 NOTE_TEMPLATES = [
     "Left voicemail, will follow up next week.",
